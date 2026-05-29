@@ -271,35 +271,78 @@ export function MergeTool() {
   // ─── Render ─────────────────────────────────────────────────────────────
 
   return (
-    <div className="w-full max-w-4xl mx-auto space-y-5">
-      {/* Upload Zone — compact when files already added */}
-      <FileUploadZone
-        onFilesSelected={handleFilesSelected}
-        disabled={isMerging}
-        compact={files.length > 0}
+    <div className="w-full max-w-4xl mx-auto flex flex-col gap-4 min-h-0">
+      {/* Scrollable content area */}
+      <div className="flex-1 overflow-y-auto min-h-0 space-y-4 pr-1">
+        {/* Upload Zone — compact when files already added */}
+        <FileUploadZone
+          onFilesSelected={handleFilesSelected}
+          disabled={isMerging}
+          compact={files.length > 0}
+        />
+
+        {/* Merge Options */}
+        <MergeOptions
+          pageSize={pageSize}
+          orientation={orientation}
+          imageQuality={imageQuality}
+          hasWordFiles={hasWordFiles}
+          onPageSizeChange={setPageSize}
+          onOrientationChange={setOrientation}
+          onImageQualityChange={setImageQuality}
+        />
+
+        {/* File List */}
+        <FileListHeader fileCount={files.length} />
+        <FileList
+          files={files}
+          onReorder={handleReorder}
+          onDelete={handleDelete}
+        />
+
+        {/* Tips Section */}
+        <Card className="bg-amber-50 border-amber-200/60">
+          <CardContent className="p-4 md:p-5">
+            <div className="flex items-start gap-2 mb-3">
+              <Lightbulb className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+              <h4 className="font-semibold text-amber-700">使用提示</h4>
+            </div>
+            <ul className="space-y-2 text-sm text-amber-800/80 ml-7">
+              <li className="flex items-start gap-2">
+                <span className="text-amber-400 mt-1">•</span>
+                <span>
+                  <strong>拖拽排序：</strong>
+                  可以拖动文件列表中的项目来调整合并顺序
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-amber-400 mt-1">•</span>
+                <span>
+                  <strong>预览：</strong>
+                  合并后在新标签页中打开 PDF，可检查效果后打印或另存为 PDF
+                </span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-amber-400 mt-1">•</span>
+                <span>
+                  <strong>隐私安全：</strong>
+                  PDF 和图片在浏览器本地处理，Word 文档通过服务端引擎转换以确保排版精准
+                </span>
+              </li>
+            </ul>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Progress — above buttons */}
+      <MergeProgress
+        visible={progressVisible}
+        percent={progressPercent}
+        fileName={progressFileName}
       />
 
-      {/* Merge Options */}
-      <MergeOptions
-        pageSize={pageSize}
-        orientation={orientation}
-        imageQuality={imageQuality}
-        hasWordFiles={hasWordFiles}
-        onPageSizeChange={setPageSize}
-        onOrientationChange={setOrientation}
-        onImageQualityChange={setImageQuality}
-      />
-
-      {/* File List */}
-      <FileListHeader fileCount={files.length} />
-      <FileList
-        files={files}
-        onReorder={handleReorder}
-        onDelete={handleDelete}
-      />
-
-      {/* Action Buttons */}
-      <div className="flex flex-col sm:flex-row gap-3 pt-2">
+      {/* Action Buttons — always visible at bottom, sticky */}
+      <div className="flex flex-col sm:flex-row gap-3 pt-2 pb-1 bg-white sticky bottom-0 z-10">
         <Button
           variant="outline"
           onClick={handleClearAll}
@@ -347,46 +390,6 @@ export function MergeTool() {
           )}
         </Button>
       </div>
-
-      {/* Progress */}
-      <MergeProgress
-        visible={progressVisible}
-        percent={progressPercent}
-        fileName={progressFileName}
-      />
-
-      {/* Tips Section */}
-      <Card className="bg-amber-50 border-amber-200/60">
-        <CardContent className="p-4 md:p-5">
-          <div className="flex items-start gap-2 mb-3">
-            <Lightbulb className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-            <h4 className="font-semibold text-amber-700">使用提示</h4>
-          </div>
-          <ul className="space-y-2 text-sm text-amber-800/80 ml-7">
-            <li className="flex items-start gap-2">
-              <span className="text-amber-400 mt-1">•</span>
-              <span>
-                <strong>拖拽排序：</strong>
-                可以拖动文件列表中的项目来调整合并顺序
-              </span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-amber-400 mt-1">•</span>
-              <span>
-                <strong>预览：</strong>
-                合并后在新标签页中打开 PDF，可检查效果后打印或另存为 PDF
-              </span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-amber-400 mt-1">•</span>
-              <span>
-                <strong>隐私安全：</strong>
-                PDF 和图片在浏览器本地处理，Word 文档通过服务端引擎转换以确保排版精准
-              </span>
-            </li>
-          </ul>
-        </CardContent>
-      </Card>
     </div>
   );
 }

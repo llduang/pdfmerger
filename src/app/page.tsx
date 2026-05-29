@@ -13,8 +13,8 @@ export default function Home() {
         </p>
       </header>
 
-      {/* Main Card — max height with scroll so buttons are always accessible */}
-      <div className="bg-white rounded-2xl shadow-2xl p-5 md:p-8 max-w-4xl mx-auto max-h-[85vh] overflow-y-auto">
+      {/* Main Card — buttons are sticky at bottom, always visible */}
+      <div className="bg-white rounded-2xl shadow-2xl p-5 md:p-8 max-w-4xl mx-auto max-h-[80vh] flex flex-col">
         <MergeTool />
       </div>
 
