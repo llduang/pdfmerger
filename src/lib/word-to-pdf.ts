@@ -2,7 +2,6 @@ import { PDFDocument } from 'pdf-lib';
 import type { OrientationMode } from './merge-pdf';
 import { renderWordToHtml } from './word-render';
 
-const SCALE = 3;
 const RENDER_CLASS = 'wp-pdf-render';
 
 export async function addWordPages(
@@ -10,13 +9,15 @@ export async function addWordPages(
   sourceArrayBuffer: ArrayBuffer,
   orientation: OrientationMode
 ): Promise<number> {
-  const { toPng } = await import('html-to-image');
+  const { default: html2canvas } = await import('html2canvas');
 
   const renderResult = await renderWordToHtml(
     sourceArrayBuffer,
     RENDER_CLASS
   );
 
+  // Set container to the exact Word page width so images
+  // and text layout match the original document.
   const pageWidthPx = Math.round(renderResult.pageWidthMm * 96 / 25.4);
 
   const captureContainer = document.createElement('div');
@@ -36,9 +37,10 @@ export async function addWordPages(
         'background:white;padding:0;margin:0;box-shadow:none;border:none;';
     }
 
-    const captureImages = captureContainer.querySelectorAll('img');
+    // Wait for all images to load in the new context
+    const imgs = captureContainer.querySelectorAll('img');
     await Promise.all(
-      Array.from(captureImages).map((img) => {
+      Array.from(imgs).map((img) => {
         const el = img as HTMLImageElement;
         if (el.complete && el.naturalWidth > 0) return Promise.resolve();
         return new Promise<void>((resolve) => {
@@ -52,7 +54,8 @@ export async function addWordPages(
         });
       })
     );
-    await new Promise((r) => setTimeout(r, 500));
+    // Extra wait for layout to settle after images load
+    await new Promise((r) => setTimeout(r, 800));
 
     let sections = captureContainer.querySelectorAll(
       `section.${RENDER_CLASS}`
@@ -77,29 +80,25 @@ export async function addWordPages(
         const wPx = section.offsetWidth || pageWidthPx;
         const hPx = section.offsetHeight || Math.round(renderResult.pageHeightMm * 96 / 25.4);
 
-        const pngDataUrl = await toPng(section, {
-          pixelRatio: SCALE,
+        // Use html2canvas for more accurate image positioning
+        const canvas = await html2canvas(section, {
           backgroundColor: '#ffffff',
+          scale: 2,
+          useCORS: true,
+          allowTaint: true,
           width: wPx,
           height: hPx,
-          style: {
-            width: `${wPx}px`,
-            height: `${hPx}px`,
-            overflow: 'hidden',
-            background: '#ffffff',
-            transform: 'none',
-          },
-          filter: (node) => {
-            return node !== captureContainer;
-          },
+          windowWidth: pageWidthPx,
         });
 
+        const pngDataUrl = canvas.toDataURL('image/png');
         const base64Data = pngDataUrl.split(',')[1];
         const imageBytes = Uint8Array.from(atob(base64Data), (c) =>
           c.charCodeAt(0)
         );
         const image = await mergedPdf.embedPng(imageBytes);
 
+        // Use Word document page dimensions for accurate PDF sizing
         let pdfWidthPt = (renderResult.pageWidthMm * 72) / 25.4;
         let pdfHeightPt = (renderResult.pageHeightMm * 72) / 25.4;
 

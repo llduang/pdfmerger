@@ -1,7 +1,3 @@
-/**
- * word-render.ts — Shared Word rendering utilities.
- */
-
 const RENDER_CLASS = 'wp-render';
 
 export interface WordRenderResult {
@@ -62,13 +58,6 @@ export async function renderWordToHtml(
         'background:white;padding:0;margin:0;box-shadow:none;';
     }
 
-    sections.forEach((sec) => {
-      const el = sec as HTMLElement;
-      el.style.transform = '';
-      el.style.boxShadow = 'none';
-      el.style.margin = '0';
-    });
-
     const styles = Array.from(container.querySelectorAll('style'))
       .map((s) => s.textContent || '')
       .join('\n');
@@ -90,7 +79,6 @@ async function convertAllImagesToBase64(
 ): Promise<void> {
   const images = container.querySelectorAll('img');
   if (images.length === 0) return;
-
   for (let i = 0; i < images.length; i++) {
     const img = images[i] as HTMLImageElement;
     if (!img.src || !img.src.startsWith('blob:')) continue;
@@ -118,17 +106,13 @@ function blobToBase64(blob: Blob): Promise<string> {
 function waitForAllImages(container: HTMLElement): Promise<void> {
   const images = container.querySelectorAll('img');
   if (images.length === 0) return Promise.resolve();
-
   return new Promise((resolve) => {
     let pending = images.length;
-    const finish = () => {
-      if (--pending <= 0) resolve();
-    };
+    const finish = () => { if (--pending <= 0) resolve(); };
     for (let i = 0; i < images.length; i++) {
       const img = images[i] as HTMLImageElement;
-      if (img.complete && img.naturalWidth > 0) {
-        finish();
-      } else {
+      if (img.complete && img.naturalWidth > 0) { finish(); }
+      else {
         img.addEventListener('load', finish, { once: true });
         img.addEventListener('error', finish, { once: true });
       }
