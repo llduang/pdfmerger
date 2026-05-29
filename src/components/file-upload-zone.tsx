@@ -77,6 +77,7 @@ export function FileUploadZone({ onFilesSelected, disabled }: FileUploadZoneProp
         accept={ACCEPTED_TYPES}
         className="hidden"
         onChange={handleInputChange}
+        onClick={(e) => e.stopPropagation()}
         disabled={disabled}
       />
 
