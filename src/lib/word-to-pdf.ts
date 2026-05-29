@@ -1,165 +1,83 @@
 /**
- * word-to-pdf.ts — Convert .docx to PDF using client-side approach.
+ * word-to-pdf.ts — Convert .docx to PDF via server-side Gotenberg/LibreOffice.
  *
- * Strategy: docx-preview renders the full document (with images) into an iframe.
- * Then we use the iframe's built-in print-to-PDF via a hidden print window
- * combined with html2canvas for reliable capture.
- *
- * Key fixes over previous attempts:
- *  - Renders in a VISIBLE iframe (not off-screen) so the browser calculates layout correctly
- *  - Images are guaranteed to load because useBase64URL is true
- *  - Uses longer settling delays for complex layouts
+ * Sends the .docx file to your Cloudflare Worker, which proxies it to
+ * Gotenberg running LibreOffice on Railway. The result is a perfect PDF
+ * — identical to "Save as PDF" in Microsoft Word.
  */
 
-import html2canvas from 'html2canvas';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, degrees } from 'pdf-lib';
 import type { OrientationMode } from './merge-pdf';
 
-const RENDER_CLASS = 'wp-merge-render';
+// Your deployed Cloudflare Worker URL
+const CONVERT_API = 'https://pdf-convert.2710476780.workers.dev';
 
 export async function addWordPages(
   mergedPdf: PDFDocument,
   sourceArrayBuffer: ArrayBuffer,
   orientation: OrientationMode
 ): Promise<number> {
-  // Step 1: Use docx-preview to render the Word document
-  const { renderAsync } = await import('docx-preview');
+  // Send .docx to server for LibreOffice conversion
+  const formData = new FormData();
+  formData.append(
+    'file',
+    new Blob([sourceArrayBuffer], {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }),
+    'document.docx'
+  );
 
-  // Create an iframe so styles from the main page don't interfere
-  const iframe = document.createElement('iframe');
-  iframe.style.cssText =
-    'position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:-1;border:none;pointer-events:none;background:white;';
-  document.body.appendChild(iframe);
-
-  const iframeDoc = iframe.contentDocument!;
-  const iframeBody = iframeDoc.body;
-
-  // Ensure the iframe has a basic style
-  const style = iframeDoc.createElement('style');
-  style.textContent = `
-    body { margin: 0; padding: 0; background: white; }
-    section { background: white; }
-  `;
-  iframeDoc.head.appendChild(style);
-
+  let response: Response;
   try {
-    // Render the Word document inside the iframe body
-    await renderAsync(sourceArrayBuffer, iframeBody, undefined, {
-      className: RENDER_CLASS,
-      inWrapper: true,
-      ignoreWidth: false,
-      ignoreHeight: false,
-      ignoreFonts: false,
-      breakPages: true,
-      ignoreLastRenderedPageBreak: true,
-      experimental: false,
-      trimXmlDeclaration: true,
-      useBase64URL: true,
-      renderHeaders: true,
-      renderFooters: true,
-      renderFootnotes: true,
-      renderEndnotes: true,
+    response = await fetch(CONVERT_API, {
+      method: 'POST',
+      body: formData,
     });
+  } catch (err) {
+    throw new Error(
+      '转换服务连接失败，请检查网络后重试'
+    );
+  }
 
-    // Step 2: Wait for all images to load and layout to settle
-    await waitAllImagesInIframe(iframeDoc);
-    // Extra time for the browser to finish layout computation
-    await delay(1000);
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(
+      `Word 转换失败（${response.status}）${text ? ': ' + text : ''}`
+    );
+  }
 
-    // Step 3: Find page sections
-    let sections = iframeDoc.querySelectorAll(`section.${RENDER_CLASS}`);
-    if (sections.length === 0) {
-      sections = iframeDoc.querySelectorAll('section');
-    }
-    if (sections.length === 0) {
-      throw new Error('Word 文档渲染失败：未生成任何页面');
-    }
+  // Load the converted PDF and copy its pages into the merged document
+  const pdfBytes = new Uint8Array(await response.arrayBuffer());
+  const sourcePdf = await PDFDocument.load(pdfBytes);
+  const pageIndices = sourcePdf.getPageIndices();
+  const copiedPages = await mergedPdf.copyPages(sourcePdf, pageIndices);
 
-    // Step 4: Capture each section page
-    for (let i = 0; i < sections.length; i++) {
-      const section = sections[i] as HTMLElement;
+  for (let i = 0; i < copiedPages.length; i++) {
+    mergedPdf.addPage(copiedPages[i]);
+  }
 
-      const wPx = section.offsetWidth || 794;
-      const hPx = section.offsetHeight || 1123;
+  // Apply orientation changes if needed
+  if (orientation !== 'keep-original') {
+    const totalPages = mergedPdf.getPageCount();
+    const startIdx = totalPages - copiedPages.length;
 
-      try {
-        // Use html2canvas with the iframe's window reference
-        const canvas = await html2canvas(section, {
-          backgroundColor: '#ffffff',
-          scale: 2,
-          width: wPx,
-          height: hPx,
-          useCORS: true,
-          allowTaint: true,
-          logging: false,
-          // Use the iframe's window for context
-          windowWidth: wPx + 100,
-          windowHeight: hPx + 100,
-        });
+    for (let i = startIdx; i < totalPages; i++) {
+      const page = mergedPdf.getPage(i);
+      const { width, height } = page.getSize();
+      const isLandscape = width > height;
 
-        const pngDataUrl = canvas.toDataURL('image/png');
-        const base64Data = pngDataUrl.split(',')[1];
-        const imageBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
-        const pdfImage = await mergedPdf.embedPng(imageBytes);
+      const needRotate =
+        (orientation === 'all-portrait' && isLandscape) ||
+        (orientation === 'all-landscape' && !isLandscape);
 
-        // Convert CSS px to PDF points (96 dpi → 72 dpi)
-        let pdfWidth = (wPx * 72) / 96;
-        let pdfHeight = (hPx * 72) / 96;
-
-        // Handle orientation swap
-        if (orientation === 'all-landscape' && pdfWidth < pdfHeight) {
-          [pdfWidth, pdfHeight] = [pdfHeight, pdfWidth];
-        } else if (orientation === 'all-portrait' && pdfWidth > pdfHeight) {
-          [pdfWidth, pdfHeight] = [pdfHeight, pdfWidth];
-        }
-
-        const page = mergedPdf.addPage([pdfWidth, pdfHeight]);
-        page.drawImage(pdfImage, {
-          x: 0,
-          y: 0,
-          width: pdfWidth,
-          height: pdfHeight,
-        });
-      } catch (err) {
-        throw new Error(
-          `Word 文档第 ${i + 1} 页渲染失败: ${err instanceof Error ? err.message : String(err)}`
-        );
+      if (needRotate) {
+        const rot = page.getRotation().angle;
+        page.setRotation(degrees((rot + 90) % 360));
+        const box = page.getMediaBox();
+        page.setMediaBox(box.y, box.x, box.height, box.width);
       }
-    }
-
-    return sections.length;
-  } finally {
-    // Clean up iframe
-    if (iframe.parentNode) {
-      document.body.removeChild(iframe);
     }
   }
-}
 
-// ─── Helpers ───────────────────────────────────────────────────────────────
-
-function waitAllImagesInIframe(doc: Document): Promise<void> {
-  const images = doc.querySelectorAll('img');
-  if (images.length === 0) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    let pending = images.length;
-    const finish = () => {
-      if (--pending <= 0) resolve();
-    };
-    for (let i = 0; i < images.length; i++) {
-      const img = images[i] as HTMLImageElement;
-      if (img.complete && img.naturalWidth > 0) {
-        finish();
-      } else {
-        img.addEventListener('load', finish, { once: true });
-        img.addEventListener('error', finish, { once: true });
-      }
-    }
-    setTimeout(resolve, 15000);
-  });
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+  return copiedPages.length;
 }

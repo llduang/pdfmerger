@@ -13,14 +13,14 @@ export default function Home() {
         </p>
       </header>
 
-      {/* Main Card */}
-      <div className="bg-white rounded-2xl shadow-2xl p-5 md:p-8 max-w-4xl mx-auto">
+      {/* Main Card — max height with scroll so buttons are always accessible */}
+      <div className="bg-white rounded-2xl shadow-2xl p-5 md:p-8 max-w-4xl mx-auto max-h-[85vh] overflow-y-auto">
         <MergeTool />
       </div>
 
       {/* Footer */}
       <footer className="text-center mt-6 text-white/50 text-xs">
-        <p>所有文件均在浏览器本地处理，不会上传到任何服务器</p>
+        <p>PDF 和图片在浏览器本地处理，Word 文档通过服务端引擎转换以确保排版精准</p>
       </footer>
     </main>
   );

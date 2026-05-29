@@ -272,10 +272,11 @@ export function MergeTool() {
 
   return (
     <div className="w-full max-w-4xl mx-auto space-y-5">
-      {/* Upload Zone */}
+      {/* Upload Zone — compact when files already added */}
       <FileUploadZone
         onFilesSelected={handleFilesSelected}
         disabled={isMerging}
+        compact={files.length > 0}
       />
 
       {/* Merge Options */}
@@ -380,7 +381,7 @@ export function MergeTool() {
               <span className="text-amber-400 mt-1">•</span>
               <span>
                 <strong>隐私安全：</strong>
-                所有文件仅在浏览器本地处理，不会上传到任何服务器
+                PDF 和图片在浏览器本地处理，Word 文档通过服务端引擎转换以确保排版精准
               </span>
             </li>
           </ul>
