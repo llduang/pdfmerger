@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useId, useState } from 'react';
 import { Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -13,7 +13,7 @@ const ACCEPTED_TYPES = '.pdf,.docx,.jpg,.jpeg,.png,.gif,.bmp,.webp';
 
 export function FileUploadZone({ onFilesSelected, disabled }: FileUploadZoneProps) {
   const [isDragOver, setIsDragOver] = useState(false);
-  const inputId = useRef(`file-input-${Date.now()}`).current;
+  const inputId = useId();
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -53,7 +53,8 @@ export function FileUploadZone({ onFilesSelected, disabled }: FileUploadZoneProp
         multiple
         accept={ACCEPTED_TYPES}
         className="sr-only"
-        style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', opacity: 0 }}
+        tabIndex={-1}
+        aria-hidden="true"
         onChange={handleInputChange}
         disabled={disabled}
       />

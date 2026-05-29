@@ -56,7 +56,41 @@ export async function processWordFile(fileData: ProcessedFile): Promise<void> {
 
   // Dynamic import to avoid SSR issues
   const mammoth = await import('mammoth');
-  const result = await mammoth.convertToHtml({ arrayBuffer });
+
+  // Style map to preserve Word formatting as much as possible
+  const styleMap = [
+    "p[style-name='Title'] => h1:fresh",
+    "p[style-name='Heading 1'] => h1:fresh",
+    "p[style-name='Heading 2'] => h2:fresh",
+    "p[style-name='Heading 3'] => h3:fresh",
+    "p[style-name='Heading 4'] => h4:fresh",
+    "p[style-name='heading 1'] => h1:fresh",
+    "p[style-name='heading 2'] => h2:fresh",
+    "p[style-name='heading 3'] => h3:fresh",
+    "p[style-name='heading 4'] => h4:fresh",
+    "p[style-name='标题'] => h1:fresh",
+    "p[style-name='标题 1'] => h1:fresh",
+    "p[style-name='标题 2'] => h2:fresh",
+    "p[style-name='标题 3'] => h3:fresh",
+    "p[style-name='标题 4'] => h4:fresh",
+  ];
+
+  const result = await mammoth.convertToHtml({
+    arrayBuffer,
+    styleMap,
+    convertImage: mammoth.images.imgElement(function(image) {
+      return image.read('base64').then(function(imageBuffer) {
+        return {
+          src: 'data:' + image.contentType + ';base64,' + imageBuffer
+        };
+      });
+    })
+  });
+
+  if (result.messages && result.messages.length > 0) {
+    console.warn('Mammoth conversion warnings:', result.messages);
+  }
+
   fileData.htmlContent = result.value;
   fileData.preview = 'word'; // Special marker for Word icon
   fileData.category = 'Word';
