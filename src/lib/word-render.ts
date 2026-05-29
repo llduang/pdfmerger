@@ -1,3 +1,11 @@
+/**
+ * word-render.ts — Shared Word rendering utilities.
+ *
+ * Provides two rendering modes:
+ *   1. Paged mode (breakPages: true)  — for print preview
+ *   2. Continuous mode (breakPages: false) — for PDF export
+ */
+
 const RENDER_CLASS = 'wp-render';
 
 export interface WordRenderResult {
@@ -12,11 +20,27 @@ export async function renderWordToHtml(
   arrayBuffer: ArrayBuffer,
   className = RENDER_CLASS
 ): Promise<WordRenderResult> {
+  return renderWord(arrayBuffer, className, true);
+}
+
+export async function renderWordContinuous(
+  arrayBuffer: ArrayBuffer,
+  className = RENDER_CLASS
+): Promise<WordRenderResult> {
+  return renderWord(arrayBuffer, className, false);
+}
+
+async function renderWord(
+  arrayBuffer: ArrayBuffer,
+  className: string,
+  breakPages: boolean
+): Promise<WordRenderResult> {
   const { renderAsync } = await import('docx-preview');
 
   const container = document.createElement('div');
-  container.style.cssText =
-    'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;';
+  container.style.cssText = breakPages
+    ? 'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;width:100vw;'
+    : 'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;';
   document.body.appendChild(container);
 
   try {
@@ -26,7 +50,7 @@ export async function renderWordToHtml(
       ignoreWidth: false,
       ignoreHeight: false,
       ignoreFonts: false,
-      breakPages: true,
+      breakPages,
       ignoreLastRenderedPageBreak: true,
       experimental: false,
       trimXmlDeclaration: true,
@@ -39,16 +63,31 @@ export async function renderWordToHtml(
 
     await convertAllImagesToBase64(container);
     await waitForAllImages(container);
-    await delay(500);
+    await delay(300);
 
-    const sections = container.querySelectorAll(`section.${className}`);
-    if (sections.length === 0) {
-      throw new Error('Word 文档渲染失败：未生成任何页面');
+    let wMm = 210;
+    let hMm = 297;
+    let pageCount = 0;
+
+    if (breakPages) {
+      const sections = container.querySelectorAll(`section.${className}`);
+      if (sections.length === 0) {
+        throw new Error('Word 文档渲染失败：未生成任何页面');
+      }
+      const first = sections[0] as HTMLElement;
+      wMm = Math.ceil(first.offsetWidth * 25.4 / 96);
+      hMm = Math.ceil(first.offsetHeight * 25.4 / 96);
+      pageCount = sections.length;
+    } else {
+      const wrapper = container.querySelector(
+        `.${className}-wrapper`
+      ) as HTMLElement;
+      if (wrapper) {
+        wMm = Math.ceil(wrapper.offsetWidth * 25.4 / 96);
+        hMm = 297;
+      }
+      pageCount = -1;
     }
-
-    const first = sections[0] as HTMLElement;
-    const wMm = Math.ceil(first.offsetWidth * 25.4 / 96);
-    const hMm = Math.ceil(first.offsetHeight * 25.4 / 96);
 
     const wrapper = container.querySelector(
       `.${className}-wrapper`
@@ -67,18 +106,17 @@ export async function renderWordToHtml(
       html: container.innerHTML,
       pageWidthMm: wMm,
       pageHeightMm: hMm,
-      pageCount: sections.length,
+      pageCount,
     };
   } finally {
     document.body.removeChild(container);
   }
 }
 
-async function convertAllImagesToBase64(
-  container: HTMLElement
-): Promise<void> {
+async function convertAllImagesToBase64(container: HTMLElement): Promise<void> {
   const images = container.querySelectorAll('img');
   if (images.length === 0) return;
+
   for (let i = 0; i < images.length; i++) {
     const img = images[i] as HTMLImageElement;
     if (!img.src || !img.src.startsWith('blob:')) continue;
@@ -106,18 +144,22 @@ function blobToBase64(blob: Blob): Promise<string> {
 function waitForAllImages(container: HTMLElement): Promise<void> {
   const images = container.querySelectorAll('img');
   if (images.length === 0) return Promise.resolve();
+
   return new Promise((resolve) => {
     let pending = images.length;
-    const finish = () => { if (--pending <= 0) resolve(); };
+    const finish = () => {
+      if (--pending <= 0) resolve();
+    };
     for (let i = 0; i < images.length; i++) {
       const img = images[i] as HTMLImageElement;
-      if (img.complete && img.naturalWidth > 0) { finish(); }
-      else {
+      if (img.complete && img.naturalWidth > 0) {
+        finish();
+      } else {
         img.addEventListener('load', finish, { once: true });
         img.addEventListener('error', finish, { once: true });
       }
     }
-    setTimeout(resolve, 15000);
+    setTimeout(resolve, 12000);
   });
 }
 

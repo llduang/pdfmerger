@@ -1,183 +1,123 @@
 /**
- * word-to-pdf.ts — Convert a .docx file to PDF pages using docx-preview + html2canvas.
+ * word-to-pdf.ts — Convert .docx to PDF via continuous-flow rendering.
  *
- * Key design decisions:
- *   - Uses html2canvas instead of html-to-image (SVG foreignObject).
- *     html2canvas directly renders the DOM to canvas, which correctly
- *     preserves absolute positioning and CSS transforms used by
- *     docx-preview for image placement.
- *   - All blob images are converted to base64 BEFORE capture.
- *   - Adds scoped CSS reset to neutralize Tailwind's preflight
- *     (specifically `img { max-width: 100%; height: auto }` which
- *     can break docx-preview's image sizing).
- *   - Explicitly sets `position: relative` on each section to ensure
- *     absolutely-positioned images are placed correctly.
- *   - Page dimensions are detected from docx-preview sections for
- *     accurate PDF page sizing.
- *   - FIX: When orientation changes, the image draw dimensions are
- *     properly adjusted to match the new page dimensions.
+ * Uses breakPages: false → entire document flows as one block →
+ * no absolute-positioning issues between sections → no image overlap.
+ * Captures entire document as one canvas, then slices into pages.
  */
 import { PDFDocument } from 'pdf-lib';
 import type { OrientationMode } from './merge-pdf';
-import { renderWordToHtml } from './word-render';
+import { renderWordContinuous } from './word-render';
 
 const SCALE = 2;
 const RENDER_CLASS = 'wp-pdf-render';
 
-/**
- * Render a Word document to PDF pages and add them to `mergedPdf`.
- * Returns the number of pages added.
- */
 export async function addWordPages(
   mergedPdf: PDFDocument,
   sourceArrayBuffer: ArrayBuffer,
   orientation: OrientationMode
 ): Promise<number> {
-  // html2canvas renders the DOM directly to canvas — much more reliable
-  // than html-to-image's SVG foreignObject approach for absolute
-  // positioning and CSS transforms used by docx-preview.
   const html2canvas = (await import('html2canvas')).default;
 
-  const renderResult = await renderWordToHtml(
-    sourceArrayBuffer,
-    RENDER_CLASS
-  );
+  const renderResult = await renderWordContinuous(sourceArrayBuffer, RENDER_CLASS);
 
-  // Create capture container (visible for layout, behind other content)
+  const pageWidthPx = Math.round(renderResult.pageWidthMm * 96 / 25.4);
+  const pageHeightPx = Math.round(renderResult.pageHeightMm * 96 / 25.4);
+
   const captureContainer = document.createElement('div');
   captureContainer.id = 'wp-capture-container';
-  captureContainer.style.cssText =
-    'position:fixed;top:0;left:0;z-index:-1;pointer-events:none;background:white;';
+  captureContainer.style.cssText = [
+    'position:fixed;top:0;left:0;z-index:-1;',
+    'pointer-events:none;background:white;',
+    `width:${pageWidthPx}px;`,
+  ].join('');
   document.body.appendChild(captureContainer);
 
-  // CRITICAL: Add scoped CSS reset to neutralize Tailwind v4 preflight.
-  // Tailwind injects `img { max-width: 100%; height: auto }` globally,
-  // which can shrink / reposition images that docx-preview sizes via
-  // wrapper divs.  This scoped reset ensures images inside the capture
-  // container are rendered exactly as docx-preview intended.
   const resetStyle = document.createElement('style');
   resetStyle.id = 'wp-capture-reset';
   resetStyle.textContent = [
-    '#wp-capture-container img { max-width: none !important; }',
-    '#wp-capture-container section { position: relative !important; }',
+    '#wp-capture-container, #wp-capture-container * {',
+    '  max-width: none !important;',
+    '  max-height: none !important;',
+    '}',
+    '#wp-capture-container img {',
+    '  max-width: none !important;',
+    '  width: auto !important;',
+    '  height: auto !important;',
+    '}',
   ].join('\n');
   document.head.appendChild(resetStyle);
 
   try {
-    // Insert rendered HTML (includes <style> tags from docx-preview)
     captureContainer.innerHTML = renderResult.html;
 
-    // Reset wrapper — remove decorative styles
     const wrapper = captureContainer.querySelector(
       `.${RENDER_CLASS}-wrapper`
     ) as HTMLElement;
     if (wrapper) {
       wrapper.style.cssText =
-        'background:white;padding:0;margin:0;box-shadow:none;';
+        'background:white;padding:0;margin:0;box-shadow:none;border:none;';
     }
 
-    // Wait for all images to fully load before capturing
     await waitForImages(captureContainer);
 
-    // Locate page sections
-    let sections = captureContainer.querySelectorAll(
-      `section.${RENDER_CLASS}`
-    );
-    if (sections.length === 0) {
-      sections = captureContainer.querySelectorAll('section');
-    }
-    if (sections.length === 0) {
-      throw new Error('Word 文档渲染失败：未生成任何页面');
+    const totalHeightPx = captureContainer.scrollHeight;
+    if (totalHeightPx <= 0) {
+      throw new Error('Word 文档渲染后高度为 0');
     }
 
-    for (let i = 0; i < sections.length; i++) {
-      const section = sections[i] as HTMLElement;
+    const fullCanvas = await html2canvas(captureContainer, {
+      scale: SCALE,
+      backgroundColor: '#ffffff',
+      width: pageWidthPx,
+      height: totalHeightPx,
+      useCORS: true,
+      allowTaint: true,
+      logging: false,
+    });
 
-      // Explicitly ensure correct positioning for absolute children
-      section.style.position = 'relative';
-      section.style.overflow = 'hidden';
-      section.style.background = '#ffffff';
-      section.style.boxShadow = 'none';
-      section.style.margin = '0';
+    const pageHeightScaled = pageHeightPx * SCALE;
+    const pageWidthScaled = pageWidthPx * SCALE;
+    const totalHeightScaled = fullCanvas.height;
+    const numPages = Math.ceil(totalHeightScaled / pageHeightScaled);
 
-      const wPx = section.offsetWidth || 794;
-      const hPx = section.offsetHeight || 1123;
+    let pdfWidthPt = (pageWidthPx * 72) / 96;
+    let pdfHeightPt = (pageHeightPx * 72) / 96;
 
-      // Size the capture container to exactly match the section so
-      // the section's layout doesn't shift when we capture it.
-      captureContainer.style.width = `${wPx}px`;
-      captureContainer.style.height = `${hPx}px`;
-
-      try {
-        const canvas = await html2canvas(section, {
-          scale: SCALE,
-          backgroundColor: '#ffffff',
-          width: wPx,
-          height: hPx,
-          useCORS: true,
-          allowTaint: true,
-          logging: false,
-        });
-
-        const pngDataUrl = canvas.toDataURL('image/png');
-        const base64Data = pngDataUrl.split(',')[1];
-        const imageBytes = Uint8Array.from(atob(base64Data), (c) =>
-          c.charCodeAt(0)
-        );
-        const image = await mergedPdf.embedPng(imageBytes);
-
-        // Calculate PDF page dimensions (96 CSS px = 72 pt = 1 inch)
-        let pdfWidthPt = (wPx * 72) / 96;
-        let pdfHeightPt = (hPx * 72) / 96;
-
-        // Handle orientation changes — swap page dims AND adjust
-        // draw dims to prevent stretching.
-        let drawWidth: number;
-        let drawHeight: number;
-
-        if (orientation === 'all-landscape' && pdfWidthPt < pdfHeightPt) {
-          drawWidth = pdfWidthPt;
-          drawHeight = pdfHeightPt;
-          [pdfWidthPt, pdfHeightPt] = [pdfHeightPt, pdfWidthPt];
-          const scaleX = pdfWidthPt / drawWidth;
-          const scaleY = pdfHeightPt / drawHeight;
-          const scale = Math.min(scaleX, scaleY, 1);
-          drawWidth *= scale;
-          drawHeight *= scale;
-        } else if (orientation === 'all-portrait' && pdfWidthPt > pdfHeightPt) {
-          drawWidth = pdfWidthPt;
-          drawHeight = pdfHeightPt;
-          [pdfWidthPt, pdfHeightPt] = [pdfHeightPt, pdfWidthPt];
-          const scaleX = pdfWidthPt / drawWidth;
-          const scaleY = pdfHeightPt / drawHeight;
-          const scale = Math.min(scaleX, scaleY, 1);
-          drawWidth *= scale;
-          drawHeight *= scale;
-        } else {
-          drawWidth = pdfWidthPt;
-          drawHeight = pdfHeightPt;
-        }
-
-        const page = mergedPdf.addPage([pdfWidthPt, pdfHeightPt]);
-
-        // Center the image on the page
-        const x = (pdfWidthPt - drawWidth) / 2;
-        const y = (pdfHeightPt - drawHeight) / 2;
-
-        page.drawImage(image, {
-          x,
-          y,
-          width: drawWidth,
-          height: drawHeight,
-        });
-      } catch (err) {
-        console.error(`Failed to capture Word page ${i + 1}:`, err);
-      }
+    if (orientation === 'all-landscape' && pdfWidthPt < pdfHeightPt) {
+      [pdfWidthPt, pdfHeightPt] = [pdfHeightPt, pdfWidthPt];
+    } else if (orientation === 'all-portrait' && pdfWidthPt > pdfHeightPt) {
+      [pdfWidthPt, pdfHeightPt] = [pdfHeightPt, pdfWidthPt];
     }
 
-    return sections.length;
+    for (let i = 0; i < numPages; i++) {
+      const startY = i * pageHeightScaled;
+      const sliceHeight = Math.min(pageHeightScaled, totalHeightScaled - startY);
+      if (sliceHeight <= 0) break;
+
+      const pageCanvas = document.createElement('canvas');
+      pageCanvas.width = pageWidthScaled;
+      pageCanvas.height = sliceHeight;
+      const ctx = pageCanvas.getContext('2d')!;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, pageWidthScaled, sliceHeight);
+      ctx.drawImage(fullCanvas, 0, startY, pageWidthScaled, sliceHeight, 0, 0, pageWidthScaled, sliceHeight);
+
+      const pngDataUrl = pageCanvas.toDataURL('image/png');
+      const base64Data = pngDataUrl.split(',')[1];
+      const imageBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+      const image = await mergedPdf.embedPng(imageBytes);
+
+      const page = mergedPdf.addPage([pdfWidthPt, pdfHeightPt]);
+      const heightRatio = sliceHeight / pageHeightScaled;
+      const drawHeightPt = pdfHeightPt * heightRatio;
+      const y = (pdfHeightPt - drawHeightPt) / 2;
+
+      page.drawImage(image, { x: 0, y, width: pdfWidthPt, height: drawHeightPt });
+    }
+
+    return numPages;
   } finally {
-    // Clean up scoped styles and container
     const styleEl = document.getElementById('wp-capture-reset');
     if (styleEl) document.head.removeChild(styleEl);
     if (captureContainer.parentNode) {
@@ -186,10 +126,6 @@ export async function addWordPages(
   }
 }
 
-/**
- * Wait for all <img> elements inside `container` to finish loading.
- * Includes a short settle delay for layout reflow after images load.
- */
 async function waitForImages(container: HTMLElement): Promise<void> {
   const images = container.querySelectorAll('img');
   if (images.length === 0) return;
@@ -209,6 +145,5 @@ async function waitForImages(container: HTMLElement): Promise<void> {
       });
     })
   );
-  // Extra settle time for layout reflow after images load
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 500));
 }
