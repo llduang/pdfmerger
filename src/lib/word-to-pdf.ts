@@ -2,15 +2,44 @@
  * word-to-pdf.ts — Convert .docx to PDF via server-side Gotenberg/LibreOffice.
  *
  * Sends the .docx to Cloudflare Worker → Gotenberg (Railway).
- * Includes retry logic and timeout for Railway cold starts.
+ * Includes retry logic, extended timeout, and pre-warm for Railway cold starts.
  */
 
 import { PDFDocument, degrees } from 'pdf-lib';
 import type { OrientationMode } from './merge-pdf';
 
 const CONVERT_API = 'https://pdf-convert.2710476780.workers.dev';
-const MAX_RETRIES = 2;
-const REQUEST_TIMEOUT = 30000; // 30 seconds (Railway cold start can be slow)
+const MAX_RETRIES = 3;
+const REQUEST_TIMEOUT = 60000; // 60 seconds (Railway free tier cold start is slow)
+
+let warmed = false;
+
+/**
+ * Pre-warm the Railway/Gotenberg service so it's ready when user clicks merge.
+ * Call this as soon as a Word file is uploaded.
+ */
+export async function warmUpConverter(): Promise<void> {
+  if (warmed) return;
+  warmed = true;
+  try {
+    // Send a tiny POST to wake up Railway/Gotenberg
+    const dummyBlob = new Blob([''], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+    const formData = new FormData();
+    formData.append('file', dummyBlob, 'warmup.docx');
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 20000);
+    await fetch(CONVERT_API, {
+      method: 'POST',
+      body: formData,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+  } catch {
+    // Warm-up failed silently — the real request will retry anyway
+    warmed = false;
+  }
+}
 
 export async function addWordPages(
   mergedPdf: PDFDocument,
@@ -68,7 +97,7 @@ export async function addWordPages(
         );
       }
 
-      // Don't retry network errors immediately, wait a bit
+      // Wait longer before each retry (2s, 4s, 6s)
       if (attempt <= MAX_RETRIES) {
         await new Promise((r) => setTimeout(r, 2000 * attempt));
       }
