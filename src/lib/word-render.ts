@@ -1,11 +1,3 @@
-/**
- * word-render.ts — Shared Word rendering utilities.
- *
- * Provides two rendering modes:
- *   1. Paged mode (breakPages: true)  — for print preview
- *   2. Continuous mode (breakPages: false) — for PDF export
- */
-
 const RENDER_CLASS = 'wp-render';
 
 export interface WordRenderResult {
@@ -20,27 +12,11 @@ export async function renderWordToHtml(
   arrayBuffer: ArrayBuffer,
   className = RENDER_CLASS
 ): Promise<WordRenderResult> {
-  return renderWord(arrayBuffer, className, true);
-}
-
-export async function renderWordContinuous(
-  arrayBuffer: ArrayBuffer,
-  className = RENDER_CLASS
-): Promise<WordRenderResult> {
-  return renderWord(arrayBuffer, className, false);
-}
-
-async function renderWord(
-  arrayBuffer: ArrayBuffer,
-  className: string,
-  breakPages: boolean
-): Promise<WordRenderResult> {
   const { renderAsync } = await import('docx-preview');
 
   const container = document.createElement('div');
-  container.style.cssText = breakPages
-    ? 'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;width:100vw;'
-    : 'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;';
+  container.style.cssText =
+    'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;width:100vw;';
   document.body.appendChild(container);
 
   try {
@@ -50,7 +26,7 @@ async function renderWord(
       ignoreWidth: false,
       ignoreHeight: false,
       ignoreFonts: false,
-      breakPages,
+      breakPages: true,
       ignoreLastRenderedPageBreak: true,
       experimental: false,
       trimXmlDeclaration: true,
@@ -65,36 +41,21 @@ async function renderWord(
     await waitForAllImages(container);
     await delay(300);
 
-    let wMm = 210;
-    let hMm = 297;
-    let pageCount = 0;
-
-    if (breakPages) {
-      const sections = container.querySelectorAll(`section.${className}`);
-      if (sections.length === 0) {
-        throw new Error('Word 文档渲染失败：未生成任何页面');
-      }
-      const first = sections[0] as HTMLElement;
-      wMm = Math.ceil(first.offsetWidth * 25.4 / 96);
-      hMm = Math.ceil(first.offsetHeight * 25.4 / 96);
-      pageCount = sections.length;
-    } else {
-      const wrapper = container.querySelector(
-        `.${className}-wrapper`
-      ) as HTMLElement;
-      if (wrapper) {
-        wMm = Math.ceil(wrapper.offsetWidth * 25.4 / 96);
-        hMm = 297;
-      }
-      pageCount = -1;
+    const sections = container.querySelectorAll(`section.${className}`);
+    if (sections.length === 0) {
+      throw new Error('Word 文档渲染失败：未生成任何页面');
     }
+
+    const first = sections[0] as HTMLElement;
+    const wMm = Math.ceil(first.offsetWidth * 25.4 / 96);
+    const hMm = Math.ceil(first.offsetHeight * 25.4 / 96);
 
     const wrapper = container.querySelector(
       `.${className}-wrapper`
     ) as HTMLElement;
     if (wrapper) {
-      wrapper.style.cssText =
-        'background:white;padding:0;margin:0;box-shadow:none;';
+      wrapper.style.background = 'white';
+      wrapper.style.boxShadow = 'none';
     }
 
     const styles = Array.from(container.querySelectorAll('style'))
@@ -106,7 +67,7 @@ async function renderWord(
       html: container.innerHTML,
       pageWidthMm: wMm,
       pageHeightMm: hMm,
-      pageCount,
+      pageCount: sections.length,
     };
   } finally {
     document.body.removeChild(container);
