@@ -17,7 +17,7 @@ export interface ProcessedFile {
   height?: number;
   // Raw data for merge
   arrayBuffer?: ArrayBuffer;
-  htmlContent?: string; // For Word files
+  htmlContent?: string; // Deprecated — no longer used (kept for type compat)
 }
 
 export function formatFileSize(bytes: number): string {
@@ -53,12 +53,8 @@ export async function processPdfFile(fileData: ProcessedFile): Promise<void> {
 export async function processWordFile(fileData: ProcessedFile): Promise<void> {
   const arrayBuffer = await fileData.file.arrayBuffer();
   fileData.arrayBuffer = arrayBuffer;
-
-  // Dynamic import to avoid SSR issues
-  const mammoth = await import('mammoth');
-
-  const result = await mammoth.convertToHtml({ arrayBuffer });
-  fileData.htmlContent = result.value;
+  // Word files keep arrayBuffer for docx-preview rendering during merge
+  // No pre-conversion needed
   fileData.preview = 'word'; // Special marker for Word icon
   fileData.category = 'Word';
   fileData.orientation = 'portrait';
