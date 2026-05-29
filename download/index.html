@@ -774,6 +774,73 @@
         // ========================================
 
         /**
+         * 安全地使用 html2canvas 截图，自动处理 file:// 跨域问题
+         * - HTTPS 环境：使用默认 iframe 克隆模式（高质量）
+         * - file:// 环境：使用 foreignObjectRendering 避免 iframe 跨域
+         */
+        async function safeHtml2Canvas(element) {
+            const isFileProtocol = window.location.protocol === 'file:';
+            const errorMsg =
+                'Word 文档渲染失败。\n\n' +
+                '当前页面通过 file:// 协议打开，浏览器安全策略阻止了渲染操作。\n\n' +
+                '请通过以下任一方式解决：\n' +
+                '1. 部署到 Cloudflare Pages 后在线访问（推荐）\n' +
+                '2. 使用本地 HTTP 服务器：\n' +
+                '   cd 文件所在目录 && python3 -m http.server 8080\n' +
+                '   然后访问 http://localhost:8080\n' +
+                '3. 使用 VS Code 的 Live Server 插件右键打开';
+
+            if (isFileProtocol) {
+                // file:// 协议：优先 foreignObjectRendering（不使用 iframe）
+                try {
+                    const canvas = await html2canvas(element, {
+                        foreignObjectRendering: true,
+                        scale: 2,
+                        useCORS: true,
+                        allowTaint: true,
+                        backgroundColor: '#ffffff',
+                        logging: false
+                    });
+                    if (canvas.width > 0 && canvas.height > 0) {
+                        return canvas;
+                    }
+                    throw new Error('foreignObject 渲染结果为空');
+                } catch (e1) {
+                    console.warn('foreignObjectRendering 失败，尝试默认模式:', e1.message);
+                    // 再试一次默认模式（某些浏览器在 file:// 下也能工作）
+                    try {
+                        const canvas = await html2canvas(element, {
+                            scale: 2,
+                            useCORS: true,
+                            allowTaint: true,
+                            backgroundColor: '#ffffff',
+                            logging: false
+                        });
+                        if (canvas.width > 0 && canvas.height > 0) {
+                            return canvas;
+                        }
+                    } catch (e2) {
+                        // 静默失败，抛出友好提示
+                    }
+                    throw new Error(errorMsg);
+                }
+            } else {
+                // HTTPS 环境：使用默认渲染（iframe 克隆，质量更好）
+                const canvas = await html2canvas(element, {
+                    scale: 2,
+                    useCORS: true,
+                    allowTaint: true,
+                    backgroundColor: '#ffffff',
+                    logging: false
+                });
+                if (canvas.width === 0 || canvas.height === 0) {
+                    throw new Error('渲染结果为空，文档内容可能无法解析');
+                }
+                return canvas;
+            }
+        }
+
+        /**
          * 将 Word 文档的 HTML 内容渲染为 Canvas，并按页面切割
          * @param {PDFDocument} mergedPdf - 目标 PDF 文档
          * @param {Object} fileData - 文件数据
@@ -788,7 +855,6 @@
             // 确定页面尺寸
             let targetWidth, targetHeight;
             if (pageSize === 'auto') {
-                // Word 文档默认用 A4
                 targetWidth = 595.28;
                 targetHeight = 841.89;
             } else {
@@ -797,36 +863,50 @@
                 targetHeight = size.height;
             }
 
-            // 如果需要统一方向，调整页面尺寸
             if (orientation === 'all-landscape') {
                 [targetWidth, targetHeight] = [targetHeight, targetWidth];
             }
 
-            // 将 PDF 点数转换为 CSS 像素（假设 96 DPI：1点 = 96/72 = 1.333px）
             const pxPerPoint = 96 / 72;
             const containerWidth = Math.round(targetWidth * pxPerPoint);
             const containerHeight = Math.round(targetHeight * pxPerPoint);
             const paddingPx = 40;
 
-            // 设置渲染容器尺寸
+            // 设置渲染容器：固定在视口内但不可见，保证 html2canvas 可以正常截取
+            container.style.position = 'fixed';
+            container.style.top = '0';
+            container.style.left = '0';
+            container.style.zIndex = '-9999';
+            container.style.overflow = 'hidden';
             container.style.width = containerWidth + 'px';
             container.style.padding = paddingPx + 'px';
+            container.style.background = '#ffffff';
+            container.style.color = '#000000';
+            container.style.fontFamily = "'SimSun', 'Songti SC', 'Noto Serif SC', 'Times New Roman', serif";
+            container.style.fontSize = '14px';
+            container.style.lineHeight = '1.8';
             container.innerHTML = fileData.htmlContent || '<p style="color:#999;">（文档内容为空）</p>';
 
             // 等待图片等资源加载
-            await new Promise(resolve => setTimeout(resolve, 300));
+            await new Promise(resolve => setTimeout(resolve, 500));
 
-            // 使用 html2canvas 截取整个容器内容
-            const fullCanvas = await html2canvas(container, {
-                scale: 2, // 2x 缩放以提高清晰度
-                useCORS: true,
-                allowTaint: true,
-                backgroundColor: '#ffffff',
-                logging: false
-            });
+            // 使用安全截图方法（自动处理 file:// 跨域问题）
+            const fullCanvas = await safeHtml2Canvas(container);
 
             // 清理容器
             container.innerHTML = '';
+            container.style.position = '';
+            container.style.top = '';
+            container.style.left = '';
+            container.style.zIndex = '';
+            container.style.overflow = '';
+            container.style.width = '';
+            container.style.padding = '';
+            container.style.background = '';
+            container.style.color = '';
+            container.style.fontFamily = '';
+            container.style.fontSize = '';
+            container.style.lineHeight = '';
 
             // 计算每页的有效高度（像素）
             const pageContentHeight = containerHeight - paddingPx * 2;
@@ -1108,6 +1188,20 @@
 
         // 页面加载完成后初始化
         updateFileList();
+
+        // 检测 file:// 协议，显示环境提示
+        if (window.location.protocol === 'file:') {
+            var tipDiv = document.createElement('div');
+            tipDiv.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);' +
+                'background:rgba(230,81,0,0.95);color:#fff;padding:12px 24px;border-radius:10px;' +
+                'font-size:14px;z-index:9999;max-width:600px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,0.3);' +
+                'line-height:1.6;';
+            tipDiv.innerHTML =
+                '<b>本地文件模式提醒</b><br>' +
+                '<span style="font-size:13px;">Word 合并功能需要通过 HTTP 服务器访问才能工作。<br>' +
+                '部署到 Cloudflare Pages，或在本地运行 <code style="background:rgba(0,0,0,0.2);padding:2px 6px;border-radius:3px;">python3 -m http.server 8080</code> 后访问 localhost:8080</span>';
+            document.body.appendChild(tipDiv);
+        }
     </script>
 </body>
 </html>
