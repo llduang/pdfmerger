@@ -74,7 +74,7 @@ export async function processWordFile(fileData: ProcessedFile): Promise<void> {
     document.body.appendChild(container);
 
     try {
-      await renderAsync(arrayBuffer, container, null, {
+      await renderAsync(arrayBuffer, container, undefined, {
         className: 'wp-detect-' + fileData.id,
         inWrapper: true,
         ignoreWidth: false,

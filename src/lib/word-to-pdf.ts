@@ -28,7 +28,7 @@ export async function addWordPages(
   document.body.appendChild(container);
 
   try {
-    await renderAsync(sourceArrayBuffer, container, null, {
+    await renderAsync(sourceArrayBuffer, container, undefined, {
       className: RENDER_CLASS,
       inWrapper: true,
       ignoreWidth: false,
