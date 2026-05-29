@@ -1,25 +1,10 @@
-/**
- * word-to-pdf.ts — Convert a .docx file to PDF pages using docx-preview + html-to-image.
- *
- * Key design decisions:
- *   - Uses html-to-image (SVG foreignObject) instead of html2canvas.
- *   - All blob images are converted to base64 BEFORE capture.
- *   - Page dimensions are detected from docx-preview sections for
- *     accurate PDF page sizing.
- *   - FIX: When orientation changes, the image draw dimensions are
- *     properly adjusted to match the new page dimensions.
- */
 import { PDFDocument } from 'pdf-lib';
 import type { OrientationMode } from './merge-pdf';
 import { renderWordToHtml } from './word-render';
 
-const SCALE = 2;
+const SCALE = 3;
 const RENDER_CLASS = 'wp-pdf-render';
 
-/**
- * Render a Word document to PDF pages and add them to `mergedPdf`.
- * Returns the number of pages added.
- */
 export async function addWordPages(
   mergedPdf: PDFDocument,
   sourceArrayBuffer: ArrayBuffer,
@@ -32,10 +17,12 @@ export async function addWordPages(
     RENDER_CLASS
   );
 
+  const pageWidthPx = Math.round(renderResult.pageWidthMm * 96 / 25.4);
+
   const captureContainer = document.createElement('div');
   captureContainer.id = 'wp-capture-container';
   captureContainer.style.cssText =
-    'position:fixed;top:0;left:0;width:100vw;z-index:-1;pointer-events:none;background:white;';
+    `position:fixed;top:0;left:0;z-index:-1;pointer-events:none;background:white;width:${pageWidthPx}px;`;
   document.body.appendChild(captureContainer);
 
   try {
@@ -46,7 +33,7 @@ export async function addWordPages(
     ) as HTMLElement;
     if (wrapper) {
       wrapper.style.cssText =
-        'background:white;padding:0;margin:0;box-shadow:none;';
+        'background:white;padding:0;margin:0;box-shadow:none;border:none;';
     }
 
     const captureImages = captureContainer.querySelectorAll('img');
@@ -65,7 +52,7 @@ export async function addWordPages(
         });
       })
     );
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 500));
 
     let sections = captureContainer.querySelectorAll(
       `section.${RENDER_CLASS}`
@@ -84,10 +71,11 @@ export async function addWordPages(
       section.style.boxShadow = 'none';
       section.style.margin = '0';
       section.style.overflow = 'hidden';
+      section.style.transform = 'none';
 
       try {
-        const wPx = section.offsetWidth || parseFloat(section.style.width) || 794;
-        const hPx = section.offsetHeight || parseFloat(section.style.height) || 1123;
+        const wPx = section.offsetWidth || pageWidthPx;
+        const hPx = section.offsetHeight || Math.round(renderResult.pageHeightMm * 96 / 25.4);
 
         const pngDataUrl = await toPng(section, {
           pixelRatio: SCALE,
@@ -99,6 +87,7 @@ export async function addWordPages(
             height: `${hPx}px`,
             overflow: 'hidden',
             background: '#ffffff',
+            transform: 'none',
           },
           filter: (node) => {
             return node !== captureContainer;
@@ -111,35 +100,24 @@ export async function addWordPages(
         );
         const image = await mergedPdf.embedPng(imageBytes);
 
-        // Calculate PDF page dimensions (96 CSS px = 72 pt = 1 inch)
-        let pdfWidthPt = (wPx * 72) / 96;
-        let pdfHeightPt = (hPx * 72) / 96;
+        let pdfWidthPt = (renderResult.pageWidthMm * 72) / 25.4;
+        let pdfHeightPt = (renderResult.pageHeightMm * 72) / 25.4;
 
-        // FIX: When orientation changes, swap page dimensions AND adjust
-        // the draw dimensions accordingly. Previously only page dims were
-        // swapped but the image was still drawn with the original dimensions,
-        // causing stretching.
         let drawWidth: number;
         let drawHeight: number;
 
         if (orientation === 'all-landscape' && pdfWidthPt < pdfHeightPt) {
-          // Swap to landscape: image becomes narrower relative to page
           drawWidth = pdfWidthPt;
           drawHeight = pdfHeightPt;
           [pdfWidthPt, pdfHeightPt] = [pdfHeightPt, pdfWidthPt];
-          // Image should fill the new landscape page, maintaining aspect ratio
-          const scaleX = pdfWidthPt / drawWidth;
-          const scaleY = pdfHeightPt / drawHeight;
-          const scale = Math.min(scaleX, scaleY, 1);
+          const scale = Math.min(pdfWidthPt / drawWidth, pdfHeightPt / drawHeight, 1);
           drawWidth *= scale;
           drawHeight *= scale;
         } else if (orientation === 'all-portrait' && pdfWidthPt > pdfHeightPt) {
           drawWidth = pdfWidthPt;
           drawHeight = pdfHeightPt;
           [pdfWidthPt, pdfHeightPt] = [pdfHeightPt, pdfWidthPt];
-          const scaleX = pdfWidthPt / drawWidth;
-          const scaleY = pdfHeightPt / drawHeight;
-          const scale = Math.min(scaleX, scaleY, 1);
+          const scale = Math.min(pdfWidthPt / drawWidth, pdfHeightPt / drawHeight, 1);
           drawWidth *= scale;
           drawHeight *= scale;
         } else {
@@ -148,17 +126,9 @@ export async function addWordPages(
         }
 
         const page = mergedPdf.addPage([pdfWidthPt, pdfHeightPt]);
-
-        // Center the image on the page
         const x = (pdfWidthPt - drawWidth) / 2;
         const y = (pdfHeightPt - drawHeight) / 2;
-
-        page.drawImage(image, {
-          x,
-          y,
-          width: drawWidth,
-          height: drawHeight,
-        });
+        page.drawImage(image, { x, y, width: drawWidth, height: drawHeight });
       } catch (err) {
         console.error(`Failed to capture Word page ${i + 1}:`, err);
       }

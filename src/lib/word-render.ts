@@ -1,46 +1,26 @@
 /**
  * word-render.ts — Shared Word rendering utilities.
- *
- * Renders a .docx file using docx-preview into a hidden container,
- * converts all blob images to base64 data-URLs, and returns
- * the extracted HTML + styles + detected page dimensions.
  */
 
 const RENDER_CLASS = 'wp-render';
 
 export interface WordRenderResult {
-  /** All <style> text content concatenated */
   styles: string;
-  /** innerHTML of the render container (includes wrapper + sections) */
   html: string;
-  /** Detected page width in mm (rounded UP) */
   pageWidthMm: number;
-  /** Detected page height in mm (rounded UP) */
   pageHeightMm: number;
-  /** Number of pages (sections) detected */
   pageCount: number;
 }
 
-// ─── Public API ─────────────────────────────────────────────────────────────
-
-/**
- * Render a .docx ArrayBuffer into clean HTML + styles.
- *
- * The rendering happens in an off-screen container in the MAIN window
- * (docx-preview requires the main window's `document`).  All blob images
- * are converted to inline base64 data-URLs before the container is
- * destroyed, so the returned HTML is completely self-contained.
- */
 export async function renderWordToHtml(
   arrayBuffer: ArrayBuffer,
   className = RENDER_CLASS
 ): Promise<WordRenderResult> {
   const { renderAsync } = await import('docx-preview');
 
-  // ── Step 1: Render with docx-preview in a hidden container ──
   const container = document.createElement('div');
   container.style.cssText =
-    'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;width:100vw;';
+    'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;';
   document.body.appendChild(container);
 
   try {
@@ -61,27 +41,19 @@ export async function renderWordToHtml(
       renderEndnotes: true,
     });
 
-    // ── Step 2: Convert every blob image to a base64 data-URL ──
     await convertAllImagesToBase64(container);
-
-    // ── Step 3: Wait for images to fully load ──
     await waitForAllImages(container);
-    // Extra settle time for layout reflow after images load
-    await delay(300);
+    await delay(500);
 
-    // ── Step 4: Detect page dimensions from first section ──
     const sections = container.querySelectorAll(`section.${className}`);
     if (sections.length === 0) {
       throw new Error('Word 文档渲染失败：未生成任何页面');
     }
 
     const first = sections[0] as HTMLElement;
-    // Use Math.ceil to round UP → @page is slightly larger than the section,
-    // preventing content overflow to a spurious extra page.
     const wMm = Math.ceil(first.offsetWidth * 25.4 / 96);
     const hMm = Math.ceil(first.offsetHeight * 25.4 / 96);
 
-    // ── Step 5: Clean wrapper styles that could cause extra spacing ──
     const wrapper = container.querySelector(
       `.${className}-wrapper`
     ) as HTMLElement;
@@ -90,7 +62,13 @@ export async function renderWordToHtml(
         'background:white;padding:0;margin:0;box-shadow:none;';
     }
 
-    // ── Step 6: Extract styles and HTML ──
+    sections.forEach((sec) => {
+      const el = sec as HTMLElement;
+      el.style.transform = '';
+      el.style.boxShadow = 'none';
+      el.style.margin = '0';
+    });
+
     const styles = Array.from(container.querySelectorAll('style'))
       .map((s) => s.textContent || '')
       .join('\n');
@@ -106,8 +84,6 @@ export async function renderWordToHtml(
     document.body.removeChild(container);
   }
 }
-
-// ─── Helpers ───────────────────────────────────────────────────────────────
 
 async function convertAllImagesToBase64(
   container: HTMLElement
@@ -127,7 +103,6 @@ async function convertAllImagesToBase64(
       img.removeAttribute('src');
     }
   }
-  // Let the browser repaint
   await delay(200);
 }
 
@@ -158,8 +133,7 @@ function waitForAllImages(container: HTMLElement): Promise<void> {
         img.addEventListener('error', finish, { once: true });
       }
     }
-    // Safety timeout
-    setTimeout(resolve, 12000);
+    setTimeout(resolve, 15000);
   });
 }
 
