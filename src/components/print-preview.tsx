@@ -12,29 +12,23 @@ interface PrintPreviewProps {
     arrayBuffer?: ArrayBuffer;
   }>;
   onClose: () => void;
+  onRetry?: () => void;
 }
 
 const RENDER_CLASS = 'wp-render';
 
 /**
- * Print Preview — NEW APPROACH (May 2026 rewrite).
+ * Print Preview — Renders Word docs via docx-preview and opens
+ * a standalone HTML page in a new tab for printing or "Save as PDF".
  *
- * Problem with old approach (iframe innerHTML transfer):
- *   - Blob images lost during DOM transfer
- *   - docx-preview CSS not fully captured
- *   - @page size mismatch caused extra pages
- *
- * New approach:
- *   1. Render each Word file with docx-preview in hidden main-window container
+ * Approach:
+ *   1. Render each Word file with docx-preview in hidden container
  *   2. Convert ALL images to base64 (self-contained, no blob URLs)
  *   3. Build a COMPLETE standalone HTML page with @page CSS
  *   4. Open as a Blob URL in a new browser tab
- *   5. The new tab auto-triggers `window.print()` → browser native PDF engine
- *
- * This eliminates ALL iframe/DOM-transfer issues because the HTML string
- * contains everything inline: styles, images (as base64), layout.
+ *   5. The new tab auto-triggers window.print()
  */
-export function PrintPreview({ files, onClose }: PrintPreviewProps) {
+export function PrintPreview({ files, onClose, onRetry }: PrintPreviewProps) {
   const [mounted, setMounted] = useState(false);
   const [status, setStatus] = useState<
     'rendering' | 'opening' | 'done' | 'error'
@@ -47,77 +41,68 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
     setMounted(true);
   }, []);
 
-  useEffect(() => {
-    if (!mounted) return;
-    let cancelled = false;
+  const doRender = useCallback(async (cancelled: { current: boolean }) => {
+    const wordFiles = files.filter((f) => f.category === 'Word');
+    if (wordFiles.length === 0) {
+      setStatus('done');
+      return;
+    }
 
-    (async () => {
-      const wordFiles = files.filter((f) => f.category === 'Word');
-      if (wordFiles.length === 0) {
-        setStatus('done');
-        return;
+    setStatus('rendering');
+
+    // Phase 1: Render all Word files
+    const results: WordRenderResult[] = [];
+
+    for (let i = 0; i < wordFiles.length; i++) {
+      if (cancelled.current) return;
+      const wf = wordFiles[i];
+      setCurrentFile(wf.name);
+
+      try {
+        const result = await renderWordToHtml(wf.arrayBuffer!, RENDER_CLASS);
+        results.push(result);
+      } catch (err) {
+        console.error(`Failed to render ${wf.name}:`, err);
+        throw new Error(`渲染失败: ${wf.name}`);
       }
 
-      setStatus('rendering');
+      setRenderedCount(i + 1);
+    }
 
-      // ── Phase 1: Render all Word files ──
-      const results: WordRenderResult[] = [];
+    if (cancelled.current) return;
 
-      for (let i = 0; i < wordFiles.length; i++) {
-        if (cancelled) return;
-        const wf = wordFiles[i];
-        setCurrentFile(wf.name);
+    // Phase 2: Build standalone HTML for the new tab
+    setStatus('opening');
 
-        try {
-          const result = await renderWordToHtml(wf.arrayBuffer!, RENDER_CLASS);
-          results.push(result);
-        } catch (err) {
-          console.error(`Failed to render ${wf.name}:`, err);
-          throw new Error(`渲染失败: ${wf.name}`);
-        }
+    const totalPages = results.reduce((s, r) => s + r.pageCount, 0);
+    const wMm = results[0].pageWidthMm;
+    const hMm = results[0].pageHeightMm;
 
-        setRenderedCount(i + 1);
-      }
+    const allStyles = results
+      .map((r) => r.styles)
+      .filter(Boolean)
+      .join('\n');
 
-      if (cancelled) return;
+    const allHtml = results
+      .map(
+        (r, i) =>
+          (i > 0
+            ? '<div class="wp-file-break"></div>'
+            : '') + r.html
+      )
+      .join('\n');
 
-      // ── Phase 2: Build standalone HTML for the new tab ──
-      setStatus('opening');
-
-      const totalPages = results.reduce((s, r) => s + r.pageCount, 0);
-      const wMm = results[0].pageWidthMm;
-      const hMm = results[0].pageHeightMm;
-
-      // Merge all docx-preview styles
-      const allStyles = results
-        .map((r) => r.styles)
-        .filter(Boolean)
-        .join('\n');
-
-      // Merge all rendered HTML, with page-break between files
-      const allHtml = results
-        .map(
-          (r, i) =>
-            (i > 0
-              ? '<div class="wp-file-break"></div>'
-              : '') + r.html
-        )
-        .join('\n');
-
-      const fullHtml = `<!DOCTYPE html>
+    const fullHtml = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>文档预览</title>
 <style>
-  /* ── Page sizing: match Word document exactly ── */
   @page {
     size: ${wMm}mm ${hMm}mm;
     margin: 0;
   }
-
-  /* ── Reset ── */
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
     background: white;
@@ -126,8 +111,6 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
     print-color-adjust: exact !important;
     color-adjust: exact !important;
   }
-
-  /* ── File separator (page break before each new file) ── */
   .wp-file-break {
     page-break-before: always;
     height: 0;
@@ -135,8 +118,6 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
     line-height: 0;
     font-size: 0;
   }
-
-  /* ── docx-preview wrapper: remove all extra spacing ── */
   .${RENDER_CLASS}-wrapper {
     background: white !important;
     padding: 0 !important;
@@ -144,8 +125,6 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
     box-shadow: none !important;
     border: none !important;
   }
-
-  /* ── Each section = exactly one printed page ── */
   section.${RENDER_CLASS} {
     page-break-after: always !important;
     page-break-inside: avoid !important;
@@ -159,12 +138,9 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
     position: relative !important;
     display: block !important;
   }
-  /* Last section of the document: no extra page break */
   section.${RENDER_CLASS}:last-of-type {
     page-break-after: auto !important;
   }
-
-  /* ── Print overrides ── */
   @media print {
     html, body { margin: 0 !important; padding: 0 !important; }
     .wp-no-print { display: none !important; }
@@ -174,7 +150,6 @@ ${allStyles ? `<style>${allStyles}</style>` : ''}
 </head>
 <body>
 
-<!-- Toolbar (hidden when printing) -->
 <div class="wp-no-print" style="
   position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
   padding: 10px 20px;
@@ -198,13 +173,11 @@ ${allStyles ? `<style>${allStyles}</style>` : ''}
     font-size: 14px;
   ">打印 / 另存为 PDF</button>
 </div>
-<!-- Spacer so content isn't behind the toolbar -->
 <div class="wp-no-print" style="height:48px;"></div>
 
 ${allHtml}
 
 <script>
-  // Auto-trigger print dialog after content loads
   window.addEventListener('load', function() {
     setTimeout(function() { window.print(); }, 600);
   });
@@ -213,27 +186,34 @@ ${allHtml}
 </body>
 </html>`;
 
-      // ── Phase 3: Open in new tab ──
+    // Phase 3: Open in new tab
+    const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
+    const blobUrl = URL.createObjectURL(blob);
+
+    const newTab = window.open(blobUrl, '_blank');
+
+    if (!newTab) {
+      throw new Error(
+        '浏览器阻止了弹出窗口，请允许弹出窗口后重试'
+      );
+    }
+
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 120000);
+
+    if (!cancelled.current) setStatus('done');
+  }, [files]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const cancelled = { current: false };
+
+    (async () => {
       try {
-        const blob = new Blob([fullHtml], { type: 'text/html;charset=utf-8' });
-        const blobUrl = URL.createObjectURL(blob);
-
-        const newTab = window.open(blobUrl, '_blank');
-
-        if (!newTab) {
-          throw new Error(
-            '浏览器阻止了弹出窗口，请允许弹出窗口后重试'
-          );
-        }
-
-        // Clean up after a while
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 120000);
-
-        if (!cancelled) setStatus('done');
+        await doRender(cancelled);
       } catch (err) {
-        if (!cancelled) {
+        if (!cancelled.current) {
           setErrorMsg(
-            err instanceof Error ? err.message : '无法打开新标签页'
+            err instanceof Error ? err.message : '预览过程中出错'
           );
           setStatus('error');
         }
@@ -241,18 +221,18 @@ ${allHtml}
     })();
 
     return () => {
-      cancelled = true;
+      cancelled.current = true;
     };
-  }, [mounted, files]);
+  }, [mounted, doRender]);
 
-  // ── Retry: close current and re-open ──
+  // FIX: Retry actually re-runs the render instead of just closing
   const handleRetry = useCallback(() => {
-    onClose();
-    // Re-trigger after a tick
-    setTimeout(() => {
-      // The parent will re-open PrintPreview if needed
-    }, 100);
-  }, [onClose]);
+    setStatus('rendering');
+    setRenderedCount(0);
+    setCurrentFile('');
+    setErrorMsg('');
+    doRender({ current: false });
+  }, [doRender]);
 
   const wordCount = files.filter((f) => f.category === 'Word').length;
 
@@ -282,7 +262,6 @@ ${allHtml}
           boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
         }}
       >
-        {/* Rendering state */}
         {status === 'rendering' && (
           <>
             <div
@@ -314,7 +293,6 @@ ${allHtml}
           </>
         )}
 
-        {/* Opening new tab state */}
         {status === 'opening' && (
           <>
             <div
@@ -337,7 +315,6 @@ ${allHtml}
           </>
         )}
 
-        {/* Done state */}
         {status === 'done' && (
           <>
             <div
@@ -389,7 +366,6 @@ ${allHtml}
           </>
         )}
 
-        {/* Error state */}
         {status === 'error' && (
           <>
             <div

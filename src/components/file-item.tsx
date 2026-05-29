@@ -1,6 +1,8 @@
 'use client';
 
 import { FileText, Image as ImageIcon, GripVertical, Trash2, FileCode } from 'lucide-react';
+import type { DraggableAttributes } from '@dnd-kit/core';
+import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -13,8 +15,8 @@ interface FileItemProps {
   index: number;
   onDelete: (id: string) => void;
   dragHandleProps?: {
-    listeners?: Record<string, unknown>;
-    attributes?: Record<string, unknown>;
+    listeners?: SyntheticListenerMap | undefined;
+    attributes?: DraggableAttributes;
     style?: React.CSSProperties;
     ref?: (el: HTMLElement | null) => void;
   };
@@ -93,7 +95,7 @@ export function FileItem({ file, index, onDelete, dragHandleProps, isDragging }:
           {file.width && file.height && (
             <>
               <span className="text-gray-300">|</span>
-              <span>{Math.round(file.width)}×{Math.round(file.height)}</span>
+              <span>{Math.round(file.width)}x{Math.round(file.height)}</span>
             </>
           )}
         </div>

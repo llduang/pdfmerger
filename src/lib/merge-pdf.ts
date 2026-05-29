@@ -19,7 +19,8 @@ export interface ProgressCallback {
 
 /**
  * Add PDF pages from a source PDF to the merged PDF document.
- * Handles rotation for orientation changes.
+ * Handles rotation for orientation changes — swaps page dimensions
+ * when rotating to ensure correct output.
  */
 export async function addPdfPages(
   mergedPdf: PDFDocument,
@@ -41,6 +42,7 @@ export async function addPdfPages(
     let pageHeight = originalPage.getHeight();
     const existingRotation = originalPage.getRotation().angle;
 
+    // Calculate effective dimensions considering existing rotation
     let effectiveWidth = pageWidth;
     let effectiveHeight = pageHeight;
 
@@ -61,6 +63,12 @@ export async function addPdfPages(
     if (needRotate) {
       const newRotation = (existingRotation + 90) % 360;
       addedPage.setRotation(degrees(newRotation));
+
+      // FIX: Also swap the page MediaBox dimensions so the physical
+      // page size matches the visual rotation. Without this, the page
+      // would appear stretched or clipped when viewed/printed.
+      const mediaBox = addedPage.getMediaBox();
+      addedPage.setMediaBox(mediaBox.y, mediaBox.x, mediaBox.height, mediaBox.width);
     }
   }
 
@@ -90,6 +98,7 @@ export async function addImagePage(
     needRotate = true;
   }
 
+  // Display dimensions after potential rotation
   const displayWidth = needRotate ? imgHeight : imgWidth;
   const displayHeight = needRotate ? imgWidth : imgHeight;
 
@@ -115,7 +124,7 @@ export async function addImagePage(
 
   const page = mergedPdf.addPage([pageWidth, pageHeight]);
 
-  let image;
+  let image: Awaited<ReturnType<typeof mergedPdf.embedPng>>;
   try {
     const imageBytes = await file.arrayBuffer();
     if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') {
@@ -130,8 +139,6 @@ export async function addImagePage(
       canvas.height = imgHeight;
 
       const img = new Image();
-      // We need the data URL; it should be already available in ProcessedFile.preview
-      // But we're passing the file, so we read it as data URL
       const dataUrl = await new Promise<string>((resolve) => {
         const reader = new FileReader();
         reader.onload = (e) => resolve(e.target?.result as string);

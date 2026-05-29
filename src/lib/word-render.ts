@@ -44,7 +44,7 @@ export async function renderWordToHtml(
   document.body.appendChild(container);
 
   try {
-    await renderAsync(arrayBuffer, container, null, {
+    await renderAsync(arrayBuffer, container, undefined, {
       className,
       inWrapper: true,
       ignoreWidth: false,

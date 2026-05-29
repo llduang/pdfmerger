@@ -211,7 +211,7 @@ export function MergeTool() {
     try {
       const pdfBytes = await doMerge();
 
-      const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+      const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -254,7 +254,7 @@ export function MergeTool() {
       setProgressPercent(0);
       try {
         const pdfBytes = await doMerge();
-        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
         const url = URL.createObjectURL(blob);
         window.open(url, '_blank');
         toast({

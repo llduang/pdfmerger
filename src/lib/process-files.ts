@@ -10,14 +10,12 @@ export interface ProcessedFile {
   type: string;
   size: number;
   category: FileCategory;
-  preview: string | null; // data URL for images, emoji for others
+  preview: string | null;
   orientation: Orientation;
   pages: number;
   width?: number;
   height?: number;
-  // Raw data for merge
   arrayBuffer?: ArrayBuffer;
-  htmlContent?: string; // Deprecated — no longer used (kept for type compat)
 }
 
 export function formatFileSize(bytes: number): string {
@@ -43,21 +41,70 @@ export async function processPdfFile(fileData: ProcessedFile): Promise<void> {
   const firstPage = pages[0];
   const width = firstPage.getWidth();
   const height = firstPage.getHeight();
-  fileData.orientation = width > height ? 'landscape' : 'portrait';
-  fileData.width = width;
-  fileData.height = height;
+
+  const rotation = firstPage.getRotation().angle;
+  let effectiveWidth = width;
+  let effectiveHeight = height;
+  if (rotation === 90 || rotation === 270) {
+    [effectiveWidth, effectiveHeight] = [effectiveHeight, effectiveWidth];
+  }
+
+  fileData.orientation = effectiveWidth > effectiveHeight ? 'landscape' : 'portrait';
+  fileData.width = effectiveWidth;
+  fileData.height = effectiveHeight;
   fileData.arrayBuffer = arrayBuffer;
-  fileData.preview = 'pdf'; // Special marker for PDF icon
+  fileData.preview = 'pdf';
 }
 
 export async function processWordFile(fileData: ProcessedFile): Promise<void> {
   const arrayBuffer = await fileData.file.arrayBuffer();
   fileData.arrayBuffer = arrayBuffer;
-  // Word files keep arrayBuffer for docx-preview rendering during merge
-  // No pre-conversion needed
-  fileData.preview = 'word'; // Special marker for Word icon
+  fileData.preview = 'word';
   fileData.category = 'Word';
-  fileData.orientation = 'portrait';
+
+  // FIX: Detect orientation from docx-preview rendering instead of hardcoding
+  try {
+    const { renderAsync } = await import('docx-preview');
+    const container = document.createElement('div');
+    container.style.cssText =
+      'position:fixed;left:-9999px;top:0;opacity:0;pointer-events:none;width:100vw;';
+    document.body.appendChild(container);
+
+    try {
+      await renderAsync(arrayBuffer, container, undefined, {
+        className: 'wp-detect',
+        inWrapper: true,
+        ignoreWidth: false,
+        ignoreHeight: false,
+        breakPages: true,
+        ignoreLastRenderedPageBreak: true,
+        trimXmlDeclaration: true,
+        useBase64URL: true,
+        renderHeaders: false,
+        renderFooters: false,
+        renderFootnotes: false,
+        renderEndnotes: false,
+      });
+
+      const sections = container.querySelectorAll('section.wp-detect');
+      if (sections.length > 0) {
+        const first = sections[0] as HTMLElement;
+        const w = first.offsetWidth || 794;
+        const h = first.offsetHeight || 1123;
+        fileData.orientation = w > h ? 'landscape' : 'portrait';
+        fileData.width = w;
+        fileData.height = h;
+      } else {
+        fileData.orientation = 'portrait';
+      }
+    } finally {
+      document.body.removeChild(container);
+    }
+  } catch {
+    // Fallback to portrait if rendering fails
+    fileData.orientation = 'portrait';
+  }
+
   fileData.pages = -1; // Calculated during merge
 }
 
