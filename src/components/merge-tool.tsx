@@ -7,7 +7,12 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { FileUploadZone } from '@/components/file-upload-zone';
 import { FileList, FileListHeader } from '@/components/file-list';
-import { MergeOptions, type PageSizeOption, type OrientationOption, type QualityOption } from '@/components/merge-options';
+import {
+  MergeOptions,
+  type PageSizeOption,
+  type OrientationOption,
+  type QualityOption,
+} from '@/components/merge-options';
 import { MergeProgress } from '@/components/merge-progress';
 import { PrintPreview } from '@/components/print-preview';
 import type { ProcessedFile } from '@/lib/process-files';
@@ -51,87 +56,97 @@ export function MergeTool() {
 
   const hasWordFiles = files.some((f) => f.category === 'Word');
 
-  // Handle file upload
-  const handleFilesSelected = useCallback(async (fileList: FileList) => {
-    const newFiles: ProcessedFile[] = [];
+  // ─── File upload ────────────────────────────────────────────────────────
 
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
-      const isDocx = file.name.toLowerCase().endsWith('.docx');
+  const handleFilesSelected = useCallback(
+    async (fileList: FileList) => {
+      const newFiles: ProcessedFile[] = [];
 
-      if (!VALID_TYPES.includes(file.type) && !isDocx) {
-        toast({
-          title: '不支持的文件格式',
-          description: `${file.name} 不是支持的格式`,
-          variant: 'destructive',
-        });
-        continue;
-      }
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        const isDocx = file.name.toLowerCase().endsWith('.docx');
 
-      const category = getFileCategory(file.name, file.type);
-      if (!category) continue;
-
-      const fileData: ProcessedFile = {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-        file,
-        name: file.name,
-        type: isDocx ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : file.type,
-        size: file.size,
-        category,
-        preview: null,
-        orientation: 'portrait',
-        pages: 0,
-      };
-
-      try {
-        if (category === 'PDF') {
-          await processPdfFile(fileData);
-        } else if (category === 'Word') {
-          await processWordFile(fileData);
-        } else {
-          await processImageFile(fileData);
+        if (!VALID_TYPES.includes(file.type) && !isDocx) {
+          toast({
+            title: '不支持的文件格式',
+            description: `${file.name} 不是支持的格式`,
+            variant: 'destructive',
+          });
+          continue;
         }
-        newFiles.push(fileData);
-      } catch (error) {
-        console.error(`Error processing ${file.name}:`, error);
-        toast({
-          title: '文件处理失败',
-          description: `${file.name} 处理时出错`,
-          variant: 'destructive',
-        });
+
+        const category = getFileCategory(file.name, file.type);
+        if (!category) continue;
+
+        const fileData: ProcessedFile = {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+          file,
+          name: file.name,
+          type: isDocx
+            ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            : file.type,
+          size: file.size,
+          category,
+          preview: null,
+          orientation: 'portrait',
+          pages: 0,
+        };
+
+        try {
+          if (category === 'PDF') {
+            await processPdfFile(fileData);
+          } else if (category === 'Word') {
+            await processWordFile(fileData);
+          } else {
+            await processImageFile(fileData);
+          }
+          newFiles.push(fileData);
+        } catch (error) {
+          console.error(`Error processing ${file.name}:`, error);
+          toast({
+            title: '文件处理失败',
+            description: `${file.name} 处理时出错`,
+            variant: 'destructive',
+          });
+        }
       }
-    }
 
-    if (newFiles.length > 0) {
-      setFiles((prev) => [...prev, ...newFiles]);
-    }
-  }, [toast]);
+      if (newFiles.length > 0) {
+        setFiles((prev) => [...prev, ...newFiles]);
+      }
+    },
+    [toast]
+  );
 
-  // Reorder files
-  const handleReorder = useCallback((fromIndex: number, toIndex: number) => {
-    setFiles((prev) => {
-      const next = [...prev];
-      const [removed] = next.splice(fromIndex, 1);
-      next.splice(toIndex, 0, removed);
-      return next;
-    });
-  }, []);
+  // ─── File list operations ────────────────────────────────────────────────
 
-  // Delete file
+  const handleReorder = useCallback(
+    (fromIndex: number, toIndex: number) => {
+      setFiles((prev) => {
+        const next = [...prev];
+        const [removed] = next.splice(fromIndex, 1);
+        next.splice(toIndex, 0, removed);
+        return next;
+      });
+    },
+    []
+  );
+
   const handleDelete = useCallback((id: string) => {
     setFiles((prev) => prev.filter((f) => f.id !== id));
   }, []);
 
-  // Clear all
   const handleClearAll = useCallback(() => {
     setFiles([]);
   }, []);
 
-  // Core merge logic — returns PDF bytes
+  // ─── Core merge logic — returns PDF bytes ───────────────────────────────
+
   const doMerge = useCallback(async (): Promise<Uint8Array> => {
     const mergedPdf = await PDFDocument.create();
     const effectivePageSize = pageSize;
 
+    // Estimate total work for progress bar
     let totalWork = 0;
     for (const fileData of files) {
       if (fileData.category === 'Word') {
@@ -150,15 +165,27 @@ export function MergeTool() {
         await addPdfPages(mergedPdf, fileData.arrayBuffer!, orientation);
         processedWork += fileData.pages || 1;
       } else if (fileData.category === 'Word') {
-        const wordPages = await addWordPages(mergedPdf, fileData.arrayBuffer!, orientation);
+        const wordPages = await addWordPages(
+          mergedPdf,
+          fileData.arrayBuffer!,
+          orientation
+        );
         processedWork += 3;
         setFiles((prev) =>
-          prev.map((f) => (f.id === fileData.id ? { ...f, pages: wordPages } : f))
+          prev.map((f) =>
+            f.id === fileData.id ? { ...f, pages: wordPages } : f
+          )
         );
       } else if (fileData.category === 'Image') {
         await addImagePage(
-          mergedPdf, fileData.file, fileData.width || 0, fileData.height || 0,
-          fileData.type, effectivePageSize, orientation, parseFloat(imageQuality)
+          mergedPdf,
+          fileData.file,
+          fileData.width || 0,
+          fileData.height || 0,
+          fileData.type,
+          effectivePageSize,
+          orientation,
+          parseFloat(imageQuality)
         );
         processedWork += 1;
       }
@@ -173,7 +200,8 @@ export function MergeTool() {
     return mergedPdfBytes;
   }, [files, pageSize, orientation, imageQuality]);
 
-  // Download merged PDF
+  // ─── Download merged PDF ────────────────────────────────────────────────
+
   const handleMergeAndDownload = useCallback(async () => {
     if (files.length === 0 || isMerging) return;
     setIsMerging(true);
@@ -204,7 +232,8 @@ export function MergeTool() {
       console.error('Merge error:', error);
       toast({
         title: '合并失败',
-        description: error instanceof Error ? error.message : '合并过程中出现未知错误',
+        description:
+          error instanceof Error ? error.message : '合并过程中出现未知错误',
         variant: 'destructive',
       });
       setProgressVisible(false);
@@ -213,7 +242,8 @@ export function MergeTool() {
     }
   }, [files, isMerging, doMerge, toast]);
 
-  // Print Preview — uses browser's native print engine for PERFECT Word rendering
+  // ─── Print Preview — opens new tab for Word files ───────────────────────
+
   const handlePrintPreview = useCallback(async () => {
     if (files.length === 0) return;
 
@@ -227,13 +257,17 @@ export function MergeTool() {
         const blob = new Blob([pdfBytes], { type: 'application/pdf' });
         const url = URL.createObjectURL(blob);
         window.open(url, '_blank');
-        toast({ title: '预览已打开', description: 'PDF文件已在新标签页中打开' });
+        toast({
+          title: '预览已打开',
+          description: 'PDF文件已在新标签页中打开',
+        });
         setProgressVisible(false);
       } catch (error) {
         console.error('Preview error:', error);
         toast({
           title: '预览失败',
-          description: error instanceof Error ? error.message : '生成预览时出错',
+          description:
+            error instanceof Error ? error.message : '生成预览时出错',
           variant: 'destructive',
         });
         setProgressVisible(false);
@@ -243,15 +277,20 @@ export function MergeTool() {
       return;
     }
 
-    // Has Word files — open print preview with native browser rendering
+    // Has Word files — show print preview overlay which opens a new tab
     setShowPrintPreview(true);
   }, [files, hasWordFiles, doMerge, toast]);
+
+  // ─── Render ─────────────────────────────────────────────────────────────
 
   return (
     <>
       <div className="w-full max-w-4xl mx-auto space-y-5">
         {/* Upload Zone */}
-        <FileUploadZone onFilesSelected={handleFilesSelected} disabled={isMerging} />
+        <FileUploadZone
+          onFilesSelected={handleFilesSelected}
+          disabled={isMerging}
+        />
 
         {/* Merge Options */}
         <MergeOptions
@@ -266,7 +305,11 @@ export function MergeTool() {
 
         {/* File List */}
         <FileListHeader fileCount={files.length} />
-        <FileList files={files} onReorder={handleReorder} onDelete={handleDelete} />
+        <FileList
+          files={files}
+          onReorder={handleReorder}
+          onDelete={handleDelete}
+        />
 
         {/* Action Buttons */}
         <div className="flex flex-col sm:flex-row gap-3 pt-2">
@@ -287,9 +330,15 @@ export function MergeTool() {
             className="flex-1 flex items-center justify-center gap-2 border-purple-300 text-purple-700 hover:bg-purple-50 hover:text-purple-800 transition-all duration-300 hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0"
           >
             {isMerging ? (
-              <><Loader2 className="w-4 h-4 animate-spin" />正在处理...</>
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                正在处理...
+              </>
             ) : (
-              <><Eye className="w-4 h-4" />打印预览（推荐）</>
+              <>
+                <Eye className="w-4 h-4" />
+                打印预览（推荐）
+              </>
             )}
           </Button>
 
@@ -299,15 +348,25 @@ export function MergeTool() {
             className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-700 hover:to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0"
           >
             {isMerging ? (
-              <><Loader2 className="w-4 h-4 animate-spin" />正在合并...</>
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                正在合并...
+              </>
             ) : (
-              <><Download className="w-4 h-4" />合并并下载</>
+              <>
+                <Download className="w-4 h-4" />
+                合并并下载
+              </>
             )}
           </Button>
         </div>
 
         {/* Progress */}
-        <MergeProgress visible={progressVisible} percent={progressPercent} fileName={progressFileName} />
+        <MergeProgress
+          visible={progressVisible}
+          percent={progressPercent}
+          fileName={progressFileName}
+        />
 
         {/* Tips Section */}
         <Card className="bg-amber-50 border-amber-200/60">
@@ -319,30 +378,45 @@ export function MergeTool() {
             <ul className="space-y-2 text-sm text-amber-800/80 ml-7">
               <li className="flex items-start gap-2">
                 <span className="text-amber-400 mt-1">•</span>
-                <span><strong>拖拽排序：</strong>可以拖动文件列表中的项目来调整合并顺序</span>
+                <span>
+                  <strong>拖拽排序：</strong>
+                  可以拖动文件列表中的项目来调整合并顺序
+                </span>
               </li>
               <li className="flex items-start gap-2">
                 <span className="text-amber-400 mt-1">•</span>
-                <span><strong>打印预览（推荐）：</strong>Word 文档使用浏览器原生引擎渲染，排版和图片完美保留。在打印对话框中选择&quot;另存为 PDF&quot;即可</span>
+                <span>
+                  <strong>打印预览（推荐）：</strong>
+                  Word 文档在新标签页中使用浏览器原生引擎渲染，排版和图片完整保留。在打印对话框中选择「另存为 PDF」即可保存
+                </span>
               </li>
               <li className="flex items-start gap-2">
                 <span className="text-amber-400 mt-1">•</span>
-                <span><strong>合并并下载：</strong>全自动合并所有文件为 PDF 并下载。Word 文档通过浏览器渲染转换，效果接近原始排版</span>
+                <span>
+                  <strong>合并并下载：</strong>
+                  全自动合并所有文件为 PDF 并下载。Word 文档通过浏览器渲染转换
+                </span>
               </li>
               <li className="flex items-start gap-2">
                 <span className="text-amber-400 mt-1">•</span>
-                <span><strong>方向处理：</strong>选择&quot;统一为竖向&quot;可自动将横向页面旋转，方便打印</span>
+                <span>
+                  <strong>方向处理：</strong>
+                  选择「统一为竖向」可自动将横向页面旋转，方便打印
+                </span>
               </li>
               <li className="flex items-start gap-2">
                 <span className="text-amber-400 mt-1">•</span>
-                <span><strong>自动适配：</strong>图片会自动适应目标纸张大小，保持原始比例</span>
+                <span>
+                  <strong>自动适配：</strong>
+                  图片会自动适应目标纸张大小，保持原始比例
+                </span>
               </li>
             </ul>
           </CardContent>
         </Card>
       </div>
 
-      {/* Print Preview Overlay */}
+      {/* Print Preview Overlay (loading → opens new tab) */}
       {showPrintPreview && (
         <PrintPreview
           files={files.map((f) => ({
