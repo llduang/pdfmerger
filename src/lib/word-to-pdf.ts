@@ -2,14 +2,16 @@ import { PDFDocument } from 'pdf-lib';
 import type { OrientationMode } from './merge-pdf';
 
 const SCALE = 2;
-const CLASS_NAME = 'docx-word-merge';
+const CLASS_NAME = 'docx-merge-render';
 
 /**
  * Render a Word document (.docx) to PDF pages using docx-preview + html2canvas.
  *
- * Note: This is the "automatic download" path. It uses html2canvas which has known
- * limitations with images and complex CSS. For PERFECT Word rendering, use the
- * PrintPreview component which leverages the browser's native print engine.
+ * Key improvements:
+ *   - Converts ALL blob images to base64 before capture
+ *   - Waits for all images to fully render
+ *   - Detects page dimensions from docx-preview sections
+ *   - Cleans wrapper styles to prevent extra pages
  */
 export async function addWordPages(
   mergedPdf: PDFDocument,
@@ -58,26 +60,39 @@ export async function addWordPages(
       throw new Error('Word 文档渲染失败：未生成任何页面');
     }
 
-    // Wait for images to load
-    await ensureAllImagesLoaded(container);
-    await new Promise((r) => setTimeout(r, 800));
+    // Convert ALL blob images to base64 (critical for html2canvas capture)
+    await convertAllImagesToBase64(container);
 
-    // Clean up wrapper styles for cleaner screenshot
-    const wrapper = container.querySelector(`.${CLASS_NAME}-wrapper`) as HTMLElement;
+    // Wait for all images to fully load and render
+    await waitForAllImages(container);
+    await new Promise((r) => setTimeout(r, 500));
+
+    // Clean up wrapper styles that could affect capture
+    const wrapper = container.querySelector(
+      `.${CLASS_NAME}-wrapper`
+    ) as HTMLElement;
     if (wrapper) {
       wrapper.style.background = 'white';
       wrapper.style.padding = '0';
       wrapper.style.margin = '0';
+      wrapper.style.boxShadow = 'none';
     }
 
-    // Render each page to canvas and embed
+    // Render each page to canvas and embed into PDF
     for (let i = 0; i < pageElements.length; i++) {
       const pageEl = pageElements[i] as HTMLElement;
       pageEl.style.background = '#ffffff';
       pageEl.style.boxShadow = 'none';
       pageEl.style.margin = '0';
+      pageEl.style.overflow = 'hidden';
 
       try {
+        // Get actual page dimensions from the section's inline styles
+        const computedWidth =
+          parseFloat(pageEl.style.width) || pageEl.offsetWidth;
+        const computedHeight =
+          parseFloat(pageEl.style.height) || pageEl.offsetHeight;
+
         const canvas = await html2canvas(pageEl, {
           scale: SCALE,
           useCORS: true,
@@ -85,12 +100,26 @@ export async function addWordPages(
           backgroundColor: '#ffffff',
           logging: false,
           imageTimeout: 15000,
+          width: computedWidth,
+          height: computedHeight,
+          // Force the captured area to exactly match the section bounds
+          windowWidth: computedWidth,
+          windowHeight: computedHeight,
           onclone: (clonedDoc) => {
-            // Fix images in the cloned document
+            // Find the cloned element
             const clonedEl = clonedDoc.querySelector(
               `[data-html2canvas-id="${pageEl.getAttribute('data-html2canvas-id')}"]`
-            ) || pageEl;
-            const imgs = (clonedEl as HTMLElement).querySelectorAll('img');
+            ) as HTMLElement;
+            if (!clonedEl) return;
+
+            // Ensure the cloned element has exact dimensions
+            clonedEl.style.width = `${computedWidth}px`;
+            clonedEl.style.height = `${computedHeight}px`;
+            clonedEl.style.overflow = 'hidden';
+            clonedEl.style.background = '#ffffff';
+
+            // Fix any remaining blob images in the clone
+            const imgs = clonedEl.querySelectorAll('img');
             imgs.forEach((img) => {
               const el = img as HTMLImageElement;
               if (el.src && el.src.startsWith('blob:')) {
@@ -104,13 +133,14 @@ export async function addWordPages(
 
         const pngDataUrl = canvas.toDataURL('image/png');
         const base64Data = pngDataUrl.split(',')[1];
-        const imageBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+        const imageBytes = Uint8Array.from(atob(base64Data), (c) =>
+          c.charCodeAt(0)
+        );
         const image = await mergedPdf.embedPng(imageBytes);
 
-        const renderedWidthPx = pageEl.offsetWidth;
-        const renderedHeightPx = pageEl.offsetHeight;
-        const pageWidthPt = (renderedWidthPx * 72) / 96;
-        const pageHeightPt = (renderedHeightPx * 72) / 96;
+        // Calculate PDF page dimensions from the section's actual rendered size
+        const pageWidthPt = (computedWidth * 72) / 96;
+        const pageHeightPt = (computedHeight * 72) / 96;
 
         let pdfWidth = pageWidthPt;
         let pdfHeight = pageHeightPt;
@@ -135,22 +165,49 @@ export async function addWordPages(
   }
 }
 
-async function ensureAllImagesLoaded(container: HTMLElement): Promise<void> {
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Convert every blob: image to a base64 data-URL so html2canvas can capture it.
+ */
+async function convertAllImagesToBase64(
+  container: HTMLElement
+): Promise<void> {
   const images = container.querySelectorAll('img');
   if (images.length === 0) return;
 
   for (let i = 0; i < images.length; i++) {
     const img = images[i] as HTMLImageElement;
-    if (img.src?.startsWith('blob:')) {
-      try {
-        const resp = await fetch(img.src);
-        const blob = await resp.blob();
-        img.src = await blobToBase64(blob);
-      } catch (e) {
-        console.warn('Failed to convert blob image:', e);
-      }
+    if (!img.src || !img.src.startsWith('blob:')) continue;
+    try {
+      const resp = await fetch(img.src);
+      const blob = await resp.blob();
+      img.src = await blobToBase64(blob);
+    } catch (e) {
+      console.warn('Failed to convert blob image:', e);
+      img.removeAttribute('src');
     }
   }
+
+  // Let the browser repaint with new base64 sources
+  await new Promise((r) => setTimeout(r, 300));
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Wait for every <img> in the container to finish loading (or error).
+ */
+async function waitForAllImages(container: HTMLElement): Promise<void> {
+  const images = container.querySelectorAll('img');
+  if (images.length === 0) return;
 
   await Promise.all(
     Array.from(images).map((img) => {
@@ -168,14 +225,6 @@ async function ensureAllImagesLoaded(container: HTMLElement): Promise<void> {
     })
   );
 
-  await new Promise((r) => setTimeout(r, 500));
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
+  // Extra wait for layout to settle after images load
+  await new Promise((r) => setTimeout(r, 300));
 }

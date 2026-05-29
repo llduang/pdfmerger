@@ -13,14 +13,17 @@ interface PrintPreviewProps {
   onClose: () => void;
 }
 
+const CLASS_NAME = 'docx-print-render';
+
 /**
  * Print Preview using an isolated iframe.
  *
- * Why iframe:
- *   - Complete CSS isolation from the main app (no Tailwind, no layout interference)
- *   - docx-preview renders perfectly inside the iframe
- *   - iframe.contentWindow.print() generates pixel-perfect PDF
- *   - No complex @media print CSS needed — the iframe IS the only content
+ * Key fixes:
+ *   1. Converts ALL blob images to base64 BEFORE transferring HTML to iframe
+ *   2. Detects page dimensions from docx-preview sections
+ *   3. Sets @page CSS to match exact page size with margin:0
+ *   4. Adds page-break-after to each section so pages map 1:1
+ *   5. Cleans wrapper padding/margin to prevent page overflow
  */
 export function PrintPreview({ files, onClose }: PrintPreviewProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -29,7 +32,6 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
   const [renderedCount, setRenderedCount] = useState(0);
   const [mounted, setMounted] = useState(false);
 
-  // Wait for client-side mount (portal target)
   useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
@@ -44,13 +46,12 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
       // Wait for iframe to load
       await new Promise<void>((resolve) => {
         iframe.onload = () => resolve();
-        // Fallback if already loaded
         setTimeout(resolve, 1000);
       });
 
       if (cancelled) return;
 
-      const doc = iframe.contentDocument!;
+      const doc = iframe.contentDocument;
       if (!doc) {
         setStatus('error');
         return;
@@ -58,19 +59,53 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
 
       setStatus('rendering');
 
-      // Clear iframe and set up base styles
+      // Set up base iframe HTML with print-safe defaults
       doc.open();
       doc.write(`<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
 <style>
+  @page {
+    size: 210mm 297mm;
+    margin: 0;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'SimSun', 'Songti SC', 'Noto Serif SC', 'Microsoft YaHei', serif;
+  html, body {
+    width: 100%;
     background: white;
     color: black;
   }
-  .file-separator { page-break-before: always; }
+  .file-separator {
+    page-break-before: always;
+    height: 0;
+    overflow: hidden;
+  }
+  /* Each docx-preview section = exactly one printed page */
+  section.${CLASS_NAME} {
+    page-break-after: always;
+    page-break-inside: avoid;
+    overflow: hidden !important;
+    margin: 0 !important;
+    float: none !important;
+    position: relative !important;
+  }
+  section.${CLASS_NAME}:last-of-type {
+    page-break-after: auto;
+  }
+  /* Remove wrapper padding/margin that causes extra pages */
+  .${CLASS_NAME}-wrapper {
+    background: white !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    display: block !important;
+  }
+  @media print {
+    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+    }
+  }
 </style>
 </head><body></body></html>`);
       doc.close();
@@ -81,14 +116,13 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
       }
 
       try {
-        // Import docx-preview dynamically
-        const docxPreview = await import('docx-preview');
-        const { renderAsync } = docxPreview;
-        const CLASS_NAME = 'docx-print-render';
-
-        // We need to render into the iframe's body using the iframe's document
-        // docx-preview needs the window.document reference of the iframe
+        const { renderAsync } = await import('docx-preview');
         const body = doc.body;
+
+        // Track detected page dimensions — will update @page after first render
+        let detectedPageWidthMm = 210;
+        let detectedPageHeightMm = 297;
+        let pageCssUpdated = false;
 
         for (let i = 0; i < wordFiles.length; i++) {
           if (cancelled) return;
@@ -96,27 +130,22 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
           const wf = wordFiles[i];
           setCurrentFile(wf.name);
 
-          // Create a page break before each file (except the first)
+          // Page break before each file (except first)
           if (i > 0) {
             const separator = doc.createElement('div');
             separator.className = 'file-separator';
             body.appendChild(separator);
           }
 
-          // Create render container for this Word file
+          // Render container for this Word file in the iframe
           const renderDiv = doc.createElement('div');
           body.appendChild(renderDiv);
 
           try {
-            // Render the Word document into the iframe's body
-            // docx-preview uses global `document` — we need to temporarily override it
-            // Actually, docx-preview accepts bodyContainer which is an element in the iframe's document
-            // The library creates elements using document.createElement which defaults to the main window's document
-            // This is a known limitation — we need to use the main window but inject styles into iframe
-
-            // Alternative approach: render in main window hidden div, then transfer HTML
+            // Step 1: Render in main window's hidden container (docx-preview uses main window's document)
             const tempContainer = document.createElement('div');
-            tempContainer.style.cssText = 'position:fixed;top:0;left:0;width:100vw;z-index:-1;pointer-events:none;background:white;';
+            tempContainer.style.cssText =
+              'position:fixed;top:0;left:0;width:100vw;z-index:-1;pointer-events:none;background:white;';
             document.body.appendChild(tempContainer);
 
             try {
@@ -137,23 +166,67 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
                 renderEndnotes: true,
               });
 
-              // Wait for images to load
+              // Step 2: Convert ALL blob images to base64 (critical for iframe transfer)
+              await convertAllImagesToBase64(tempContainer);
+
+              // Step 3: Wait for images to fully load
               await waitForImages(tempContainer);
 
-              // Transfer all content (including <style> elements) to the iframe
-              // 1. Copy all <style> elements
+              // Step 4: Detect page dimensions from first rendered section
+              if (!pageCssUpdated) {
+                const firstSection = tempContainer.querySelector(
+                  `section.${CLASS_NAME}`
+                ) as HTMLElement;
+                if (firstSection) {
+                  // docx-preview sets inline width/height on sections
+                  const style = firstSection.style;
+                  const wPx = parseFloat(style.width) || firstSection.offsetWidth;
+                  const hPx = parseFloat(style.height) || firstSection.offsetHeight;
+                  detectedPageWidthMm = (wPx * 25.4) / 96;
+                  detectedPageHeightMm = (hPx * 25.4) / 96;
+
+                  // Add a small buffer (0.5mm) to prevent sub-pixel overflow
+                  detectedPageWidthMm = Math.ceil(detectedPageWidthMm * 2) / 2 + 0.5;
+                  detectedPageHeightMm = Math.ceil(detectedPageHeightMm * 2) / 2 + 0.5;
+
+                  // Update @page CSS in iframe
+                  const pageStyle = doc.createElement('style');
+                  pageStyle.id = 'docx-page-size';
+                  pageStyle.textContent = `
+                    @page {
+                      size: ${detectedPageWidthMm}mm ${detectedPageHeightMm}mm;
+                      margin: 0;
+                    }
+                  `;
+                  doc.head.appendChild(pageStyle);
+                  pageCssUpdated = true;
+                }
+              }
+
+              // Step 5: Clean wrapper styles to prevent page overflow
+              const wrapper = tempContainer.querySelector(
+                `.${CLASS_NAME}-wrapper`
+              ) as HTMLElement;
+              if (wrapper) {
+                wrapper.style.background = 'white';
+                wrapper.style.padding = '0';
+                wrapper.style.margin = '0';
+                wrapper.style.boxShadow = 'none';
+              }
+
+              // Step 6: Transfer <style> elements to iframe
               const styles = tempContainer.querySelectorAll('style');
-              styles.forEach((style) => {
-                const clonedStyle = doc.createElement('style');
-                clonedStyle.textContent = style.textContent;
-                doc.head.appendChild(clonedStyle);
+              styles.forEach((s) => {
+                const cloned = doc.createElement('style');
+                cloned.textContent = s.textContent;
+                doc.head.appendChild(cloned);
               });
 
-              // 2. Copy the rendered HTML
+              // Step 7: Transfer rendered HTML
               renderDiv.innerHTML = tempContainer.innerHTML;
 
-              // 3. Wait for images in the iframe to load
-              await waitForImages(renderDiv, doc.defaultView!);
+              // Step 8: Wait for images to load in iframe context
+              await waitForImages(renderDiv, doc.defaultView || undefined);
             } finally {
               document.body.removeChild(tempContainer);
             }
@@ -175,10 +248,11 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
     }
 
     renderFiles();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [mounted, files]);
 
-  // Print the iframe content
   const handlePrint = useCallback(() => {
     const iframe = iframeRef.current;
     if (!iframe?.contentWindow) return;
@@ -189,28 +263,31 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
   const wordCount = files.filter((f) => f.category === 'Word').length;
   const nonWordCount = files.length - wordCount;
 
-  // Use portal to render at body level — critical for z-index and print isolation
   if (!mounted) return null;
 
   return createPortal(
-    <div style={{
-      position: 'fixed',
-      inset: 0,
-      zIndex: 99999,
-      display: 'flex',
-      flexDirection: 'column',
-      background: '#f0f0f0',
-    }}>
-      {/* Header */}
-      <div style={{
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        zIndex: 99999,
         display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '12px 24px',
-        background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
-        color: 'white',
-        flexShrink: 0,
-      }}>
+        flexDirection: 'column',
+        background: '#f0f0f0',
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '12px 24px',
+          background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+          color: 'white',
+          flexShrink: 0,
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <h2 style={{ fontSize: 18, fontWeight: 'bold' }}>打印预览</h2>
           {status === 'loading' && (
@@ -218,7 +295,8 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
           )}
           {status === 'rendering' && (
             <span style={{ fontSize: 14, opacity: 0.8 }}>
-              正在渲染 ({renderedCount}/{wordCount}) {currentFile ? `— ${currentFile}` : ''}
+              正在渲染 ({renderedCount}/{wordCount}){' '}
+              {currentFile ? `— ${currentFile}` : ''}
             </span>
           )}
           {status === 'ready' && (
@@ -246,7 +324,7 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
               fontSize: 14,
             }}
           >
-            💾 另存为 PDF / 打印
+            另存为 PDF / 打印
           </button>
           <button
             onClick={onClose}
@@ -266,42 +344,50 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
 
       {/* Info bar for non-Word files */}
       {nonWordCount > 0 && (
-        <div style={{
-          padding: '10px 24px',
-          background: '#fef3c7',
-          borderBottom: '1px solid #fde68a',
-          fontSize: 13,
-          color: '#92400e',
-          textAlign: 'center',
-        }}>
-          提示：PDF 和图片文件已通过合并引擎处理。请先使用"合并并下载"获取完整 PDF，或在打印对话框中处理。
-          Word 文档将以完美排版在此预览并打印。
+        <div
+          style={{
+            padding: '10px 24px',
+            background: '#fef3c7',
+            borderBottom: '1px solid #fde68a',
+            fontSize: 13,
+            color: '#92400e',
+            textAlign: 'center',
+          }}
+        >
+          提示：PDF 和图片文件已通过合并引擎处理。请先使用「合并并下载」获取完整
+          PDF，或在打印对话框中处理。 Word 文档将以完美排版在此预览并打印。
         </div>
       )}
 
       {/* Loading indicator */}
       {(status === 'loading' || status === 'rendering') && (
-        <div style={{
-          flex: 1,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}>
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
           <div style={{ textAlign: 'center', color: '#6b7280' }}>
-            <div style={{
-              width: 48, height: 48, margin: '0 auto 16px',
-              border: '4px solid #e5e7eb',
-              borderTopColor: '#7c3aed',
-              borderRadius: '50%',
-              animation: 'spin 1s linear infinite',
-            }} />
+            <div
+              style={{
+                width: 48,
+                height: 48,
+                margin: '0 auto 16px',
+                border: '4px solid #e5e7eb',
+                borderTopColor: '#7c3aed',
+                borderRadius: '50%',
+                animation: 'spin 1s linear infinite',
+              }}
+            />
             <p>正在渲染 Word 文档，请稍候...</p>
             <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
           </div>
         </div>
       )}
 
-      {/* The iframe that contains the rendered Word documents */}
+      {/* iframe for rendered content */}
       <iframe
         ref={iframeRef}
         title="Word 文档预览"
@@ -315,30 +401,39 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
 
       {/* Ready state message */}
       {status === 'ready' && wordCount > 0 && (
-        <div style={{
-          padding: '10px 24px',
-          background: '#f0fdf4',
-          borderTop: '1px solid #bbf7d0',
-          fontSize: 13,
-          color: '#166534',
-          textAlign: 'center',
-        }}>
-          ✓ 渲染完成！请检查上方预览效果，然后点击"另存为 PDF / 打印"按钮。
-          在打印对话框中可以选择"另存为 PDF"来保存。
+        <div
+          style={{
+            padding: '10px 24px',
+            background: '#f0fdf4',
+            borderTop: '1px solid #bbf7d0',
+            fontSize: 13,
+            color: '#166534',
+            textAlign: 'center',
+          }}
+        >
+          ✓ 渲染完成！请检查上方预览效果，然后点击「另存为 PDF /
+          打印」按钮。在打印对话框中可以选择「另存为
+          PDF」来保存。
         </div>
       )}
 
       {/* Error state */}
       {status === 'error' && (
-        <div style={{
-          flex: 1,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}>
-          <div style={{ textAlign: 'center', color: '#dc2626', padding: 24 }}>
+        <div
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <div
+            style={{ textAlign: 'center', color: '#dc2626', padding: 24 }}
+          >
             <p style={{ fontSize: 16, fontWeight: 'bold' }}>渲染失败</p>
-            <p style={{ fontSize: 14, color: '#6b7280', marginTop: 8 }}>
+            <p
+              style={{ fontSize: 14, color: '#6b7280', marginTop: 8 }}
+            >
               请确认文件为有效的 .docx 格式，然后重试。
             </p>
             <button
@@ -364,13 +459,46 @@ export function PrintPreview({ files, onClose }: PrintPreviewProps) {
   );
 }
 
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
 /**
- * Wait for all images in a container to finish loading.
+ * Convert every blob: image inside `container` to a base64 data-URL so it
+ * survives innerHTML transfer to the iframe.
  */
-function waitForImages(
-  container: HTMLElement,
-  win?: Window
-): Promise<void> {
+async function convertAllImagesToBase64(container: HTMLElement): Promise<void> {
+  const images = container.querySelectorAll('img');
+  if (images.length === 0) return;
+
+  for (let i = 0; i < images.length; i++) {
+    const img = images[i] as HTMLImageElement;
+    if (!img.src || !img.src.startsWith('blob:')) continue;
+    try {
+      const resp = await fetch(img.src);
+      const blob = await resp.blob();
+      img.src = await blobToBase64(blob);
+    } catch (e) {
+      console.warn('Failed to convert blob image to base64:', e);
+      img.removeAttribute('src');
+    }
+  }
+
+  // Small delay to let the browser repaint with new base64 src
+  await new Promise((r) => setTimeout(r, 200));
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Wait for all images in a container to finish loading (or error).
+ */
+function waitForImages(container: HTMLElement, win?: Window): Promise<void> {
   const images = container.querySelectorAll('img');
   if (images.length === 0) return Promise.resolve();
 
@@ -379,19 +507,28 @@ function waitForImages(
   return new Promise((resolve) => {
     let pending = images.length;
     let done = false;
-    const finish = () => { if (!done) { done = true; resolve(); } };
+    const finish = () => {
+      if (!done) {
+        done = true;
+        resolve();
+      }
+    };
 
     for (let i = 0; i < images.length; i++) {
       const img = images[i] as HTMLImageElement;
-      if (img.complete) {
+      if (img.complete && img.naturalWidth > 0) {
         pending--;
         if (pending === 0) finish();
       } else {
-        const loadHandler = () => { pending--; if (pending === 0) finish(); };
-        img.addEventListener('load', loadHandler, { once: true });
-        img.addEventListener('error', loadHandler, { once: true });
+        const handler = () => {
+          pending--;
+          if (pending === 0) finish();
+        };
+        img.addEventListener('load', handler, { once: true });
+        img.addEventListener('error', handler, { once: true });
       }
     }
+    // Timeout fallback
     targetWindow.setTimeout(finish, 10000);
   });
 }
