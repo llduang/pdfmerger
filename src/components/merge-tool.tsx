@@ -372,13 +372,6 @@ export function MergeTool() {
             <li className="flex items-start gap-2">
               <span className="text-amber-400 mt-1">•</span>
               <span>
-                <strong>服务端转换：</strong>
-                Word 文档通过 LibreOffice 引擎在服务端转换为 PDF，排版、图片、边距与 Word 原文件完全一致
-              </span>
-            </li>
-            <li className="flex items-start gap-2">
-              <span className="text-amber-400 mt-1">•</span>
-              <span>
                 <strong>预览：</strong>
                 合并后在新标签页中打开 PDF，可检查效果后打印或另存为 PDF
               </span>
@@ -387,7 +380,7 @@ export function MergeTool() {
               <span className="text-amber-400 mt-1">•</span>
               <span>
                 <strong>隐私安全：</strong>
-                文件仅在转换时发送到服务端，不会被存储，处理完立即丢弃
+                所有文件仅在浏览器本地处理，不会上传到任何服务器
               </span>
             </li>
           </ul>
