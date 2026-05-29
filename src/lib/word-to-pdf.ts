@@ -19,30 +19,27 @@ export async function addWordPages(
   const { renderAsync } = await import('docx-preview');
   const html2canvas = (await import('html2canvas')).default;
 
-  // 1. Create containers
-  // Style container: inject into head so html2canvas picks up all docx-preview styles
-  const styleContainer = document.createElement('div');
-  styleContainer.id = `${CLASS_NAME}-styles`;
-  document.head.appendChild(styleContainer);
-
-  // Body container: hidden off-screen area for docx-preview to render pages into
-  const bodyContainer = document.createElement('div');
-  bodyContainer.id = `${CLASS_NAME}-container`;
-  bodyContainer.style.cssText = `
-    position: fixed;
+  // 1. Create a render container
+  // Place it off-screen to the left (not display:none or visibility:hidden, so browser fully renders it)
+  const container = document.createElement('div');
+  container.id = `${CLASS_NAME}-container`;
+  container.style.cssText = `
+    position: absolute;
+    left: -10000px;
     top: 0;
-    left: 0;
-    z-index: -9999;
+    width: 10000px;
     overflow: visible;
-    background: transparent;
+    background: #ffffff;
     opacity: 1;
     visibility: visible;
   `;
-  document.body.appendChild(bodyContainer);
+  document.body.appendChild(container);
 
   try {
     // 2. Render the Word document
-    await renderAsync(sourceArrayBuffer, bodyContainer, styleContainer, {
+    // Pass null for styleContainer so styles are injected directly into bodyContainer
+    // This avoids the issue of browsers moving <div> elements out of <head>
+    await renderAsync(sourceArrayBuffer, container, null, {
       className: CLASS_NAME,
       inWrapper: true,
       ignoreWidth: false,
@@ -61,18 +58,21 @@ export async function addWordPages(
 
     // 3. Find all rendered page sections
     // docx-preview DOM structure (inWrapper=true):
-    //   bodyContainer > div.{className}-wrapper > section.{className}
-    let pageElements = bodyContainer.querySelectorAll(`section.${CLASS_NAME}`);
+    //   container > div.{className}-wrapper > section.{className}
+    let pageElements = container.querySelectorAll(`section.${CLASS_NAME}`);
     if (pageElements.length === 0) {
-      // Fallback: any section inside the container
-      pageElements = bodyContainer.querySelectorAll('section');
+      // Fallback: any section elements
+      pageElements = container.querySelectorAll('section');
     }
     if (pageElements.length === 0) {
       throw new Error('Word 文档渲染失败：未生成任何页面');
     }
 
-    // 4. Wait a moment for all styles to apply and images to load
-    await new Promise((r) => setTimeout(r, 500));
+    // 4. Wait for all images to fully load and browser to complete layout
+    // renderAsync resolves when its internal tasks are done, but the browser
+    // may still need time to decode images and finish layout/paint
+    await waitForImagesLoaded(container);
+    await new Promise((r) => setTimeout(r, 300));
 
     // 5. Render each page to canvas and embed into PDF
     for (let i = 0; i < pageElements.length; i++) {
@@ -121,12 +121,55 @@ export async function addWordPages(
 
     return pageElements.length;
   } finally {
-    // 6. Clean up containers
-    if (bodyContainer.parentNode) {
-      document.body.removeChild(bodyContainer);
-    }
-    if (styleContainer.parentNode) {
-      document.head.removeChild(styleContainer);
+    // 6. Clean up the render container
+    if (container.parentNode) {
+      document.body.removeChild(container);
     }
   }
+}
+
+/**
+ * Wait for all images inside a container to finish loading.
+ */
+function waitForImagesLoaded(container: HTMLElement): Promise<void> {
+  return new Promise((resolve) => {
+    const images = container.querySelectorAll('img');
+    if (images.length === 0) {
+      resolve();
+      return;
+    }
+
+    let pending = images.length;
+    let resolved = false;
+
+    const done = () => {
+      if (resolved) return;
+      resolved = true;
+      resolve();
+    };
+
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i] as HTMLImageElement;
+
+      if (img.complete && img.naturalWidth > 0) {
+        pending--;
+        if (pending === 0) done();
+        continue;
+      }
+
+      img.addEventListener('load', () => {
+        pending--;
+        if (pending === 0) done();
+      }, { once: true });
+
+      img.addEventListener('error', () => {
+        // Even on error, count as done (we'll just see a broken image)
+        pending--;
+        if (pending === 0) done();
+      }, { once: true });
+    }
+
+    // Safety timeout: don't wait forever
+    setTimeout(done, 5000);
+  });
 }
