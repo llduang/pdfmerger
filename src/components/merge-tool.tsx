@@ -46,7 +46,7 @@ export function MergeTool() {
   const [progressFileName, setProgressFileName] = useState('');
 
   const [pageSize, setPageSize] = useState<PageSizeOption>('a4');
-  const [orientation, setOrientation] = useState<OrientationOption>('all-portrait');
+  const [orientation, setOrientation] = useState<OrientationOption>('keep-original');
   const [imageQuality, setImageQuality] = useState<QualityOption>('0.9');
 
   const hasWordFiles = files.some((f) => f.category === 'Word');

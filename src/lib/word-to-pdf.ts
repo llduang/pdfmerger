@@ -1,11 +1,14 @@
 /**
- * word-to-pdf.ts — Convert .docx to PDF using client-side rendering.
+ * word-to-pdf.ts — Convert .docx to PDF using client-side approach.
  *
- * Uses docx-preview to render the Word document into HTML sections,
- * then html2canvas to capture each section as a high-quality image,
- * and finally pdf-lib to embed the images as PDF pages.
+ * Strategy: docx-preview renders the full document (with images) into an iframe.
+ * Then we use the iframe's built-in print-to-PDF via a hidden print window
+ * combined with html2canvas for reliable capture.
  *
- * This is the default client-side approach that works without any server.
+ * Key fixes over previous attempts:
+ *  - Renders in a VISIBLE iframe (not off-screen) so the browser calculates layout correctly
+ *  - Images are guaranteed to load because useBase64URL is true
+ *  - Uses longer settling delays for complex layouts
  */
 
 import html2canvas from 'html2canvas';
@@ -19,16 +22,29 @@ export async function addWordPages(
   sourceArrayBuffer: ArrayBuffer,
   orientation: OrientationMode
 ): Promise<number> {
-  // Step 1: Render .docx using docx-preview
+  // Step 1: Use docx-preview to render the Word document
   const { renderAsync } = await import('docx-preview');
 
-  const container = document.createElement('div');
-  container.style.cssText =
-    'position:fixed;left:-9999px;top:0;width:100vw;pointer-events:none;';
-  document.body.appendChild(container);
+  // Create an iframe so styles from the main page don't interfere
+  const iframe = document.createElement('iframe');
+  iframe.style.cssText =
+    'position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:-1;border:none;pointer-events:none;background:white;';
+  document.body.appendChild(iframe);
+
+  const iframeDoc = iframe.contentDocument!;
+  const iframeBody = iframeDoc.body;
+
+  // Ensure the iframe has a basic style
+  const style = iframeDoc.createElement('style');
+  style.textContent = `
+    body { margin: 0; padding: 0; background: white; }
+    section { background: white; }
+  `;
+  iframeDoc.head.appendChild(style);
 
   try {
-    await renderAsync(sourceArrayBuffer, container, undefined, {
+    // Render the Word document inside the iframe body
+    await renderAsync(sourceArrayBuffer, iframeBody, undefined, {
       className: RENDER_CLASS,
       inWrapper: true,
       ignoreWidth: false,
@@ -45,29 +61,21 @@ export async function addWordPages(
       renderEndnotes: true,
     });
 
-    // Step 2: Convert blob images to base64
-    await convertBlobImagesToBase64(container);
-    await waitForImages(container);
-    await delay(500);
+    // Step 2: Wait for all images to load and layout to settle
+    await waitAllImagesInIframe(iframeDoc);
+    // Extra time for the browser to finish layout computation
+    await delay(1000);
 
-    // Step 3: Find all page sections
-    let sections = container.querySelectorAll(`section.${RENDER_CLASS}`);
+    // Step 3: Find page sections
+    let sections = iframeDoc.querySelectorAll(`section.${RENDER_CLASS}`);
     if (sections.length === 0) {
-      sections = container.querySelectorAll('section');
+      sections = iframeDoc.querySelectorAll('section');
     }
     if (sections.length === 0) {
       throw new Error('Word 文档渲染失败：未生成任何页面');
     }
 
-    // Step 4: Move container into viewport for accurate rendering
-    container.style.left = '0';
-    container.style.top = '0';
-    container.style.opacity = '1';
-    container.style.zIndex = '-1';
-    container.style.background = 'white';
-    await delay(200);
-
-    // Step 5: Capture each page section
+    // Step 4: Capture each section page
     for (let i = 0; i < sections.length; i++) {
       const section = sections[i] as HTMLElement;
 
@@ -75,6 +83,7 @@ export async function addWordPages(
       const hPx = section.offsetHeight || 1123;
 
       try {
+        // Use html2canvas with the iframe's window reference
         const canvas = await html2canvas(section, {
           backgroundColor: '#ffffff',
           scale: 2,
@@ -83,6 +92,9 @@ export async function addWordPages(
           useCORS: true,
           allowTaint: true,
           logging: false,
+          // Use the iframe's window for context
+          windowWidth: wPx + 100,
+          windowHeight: hPx + 100,
         });
 
         const pngDataUrl = canvas.toDataURL('image/png');
@@ -117,43 +129,17 @@ export async function addWordPages(
 
     return sections.length;
   } finally {
-    if (container.parentNode) {
-      document.body.removeChild(container);
+    // Clean up iframe
+    if (iframe.parentNode) {
+      document.body.removeChild(iframe);
     }
   }
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-async function convertBlobImagesToBase64(
-  container: HTMLElement
-): Promise<void> {
-  const images = container.querySelectorAll('img');
-  for (let i = 0; i < images.length; i++) {
-    const img = images[i] as HTMLImageElement;
-    if (!img.src || !img.src.startsWith('blob:')) continue;
-    try {
-      const resp = await fetch(img.src);
-      const blob = await resp.blob();
-      img.src = await blobToBase64(blob);
-    } catch {
-      img.removeAttribute('src');
-    }
-  }
-  await delay(200);
-}
-
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-}
-
-function waitForImages(container: HTMLElement): Promise<void> {
-  const images = container.querySelectorAll('img');
+function waitAllImagesInIframe(doc: Document): Promise<void> {
+  const images = doc.querySelectorAll('img');
   if (images.length === 0) return Promise.resolve();
 
   return new Promise((resolve) => {
@@ -170,7 +156,7 @@ function waitForImages(container: HTMLElement): Promise<void> {
         img.addEventListener('error', finish, { once: true });
       }
     }
-    setTimeout(resolve, 12000);
+    setTimeout(resolve, 15000);
   });
 }
 

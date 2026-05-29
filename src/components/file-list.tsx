@@ -117,7 +117,7 @@ export function FileList({ files, onReorder, onDelete }: FileListProps) {
           items={files.map((f) => f.id)}
           strategy={verticalListSortingStrategy}
         >
-          <ScrollArea className="max-h-96">
+          <ScrollArea className="max-h-64">
             <div className="flex flex-col gap-2 pr-3">
               {files.map((file, index) => (
                 <SortableFileItem

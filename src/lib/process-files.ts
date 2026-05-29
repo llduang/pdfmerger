@@ -57,8 +57,7 @@ export async function processPdfFile(fileData: ProcessedFile): Promise<void> {
 }
 
 /**
- * Process Word file — render it to detect page count and orientation.
- * Uses docx-preview for quick preview rendering (not full merge-quality).
+ * Process Word file — render in an iframe to detect page count and orientation.
  */
 export async function processWordFile(fileData: ProcessedFile): Promise<void> {
   const arrayBuffer = await fileData.file.arrayBuffer();
@@ -68,13 +67,19 @@ export async function processWordFile(fileData: ProcessedFile): Promise<void> {
   try {
     const { renderAsync } = await import('docx-preview');
 
-    const container = document.createElement('div');
-    container.style.cssText =
-      'position:fixed;left:-9999px;top:0;width:100vw;pointer-events:none;';
-    document.body.appendChild(container);
+    // Create a temporary iframe for rendering (isolated from main page styles)
+    const iframe = document.createElement('iframe');
+    iframe.style.cssText =
+      'position:fixed;left:-9999px;top:0;width:100vw;height:100vh;border:none;pointer-events:none;';
+    document.body.appendChild(iframe);
 
     try {
-      await renderAsync(arrayBuffer, container, undefined, {
+      const iframeDoc = iframe.contentDocument!;
+      const style = iframeDoc.createElement('style');
+      style.textContent = 'body{margin:0;padding:0;background:white;}';
+      iframeDoc.head.appendChild(style);
+
+      await renderAsync(arrayBuffer, iframeDoc.body, undefined, {
         className: 'wp-detect-' + fileData.id,
         inWrapper: true,
         ignoreWidth: false,
@@ -83,29 +88,9 @@ export async function processWordFile(fileData: ProcessedFile): Promise<void> {
         useBase64URL: true,
       });
 
-      // Convert blob images to base64 for reliable measurement
-      const images = container.querySelectorAll('img');
-      for (let i = 0; i < images.length; i++) {
-        const img = images[i] as HTMLImageElement;
-        if (img.src && img.src.startsWith('blob:')) {
-          try {
-            const resp = await fetch(img.src);
-            const blob = await resp.blob();
-            img.src = await new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result as string);
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-          } catch {
-            // skip broken images
-          }
-        }
-      }
-
-      // Wait for images to load
+      // Wait for images and layout
       await new Promise<void>((resolve) => {
-        const imgs = container.querySelectorAll('img');
+        const imgs = iframeDoc.querySelectorAll('img');
         if (imgs.length === 0) { resolve(); return; }
         let pending = imgs.length;
         const done = () => { if (--pending <= 0) resolve(); };
@@ -120,9 +105,9 @@ export async function processWordFile(fileData: ProcessedFile): Promise<void> {
         setTimeout(resolve, 8000);
       });
 
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 500));
 
-      const sections = container.querySelectorAll('section');
+      const sections = iframeDoc.querySelectorAll('section');
       if (sections.length > 0) {
         fileData.pages = sections.length;
         const first = sections[0] as HTMLElement;
@@ -134,12 +119,11 @@ export async function processWordFile(fileData: ProcessedFile): Promise<void> {
         fileData.orientation = 'portrait';
       }
     } finally {
-      document.body.removeChild(container);
+      document.body.removeChild(iframe);
     }
 
     fileData.preview = 'word';
   } catch {
-    // If rendering fails, use defaults
     fileData.pages = 1;
     fileData.orientation = 'portrait';
     fileData.preview = 'word';
