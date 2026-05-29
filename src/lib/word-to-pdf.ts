@@ -1,8 +1,8 @@
 import { PDFDocument } from 'pdf-lib';
 import type { OrientationMode } from './merge-pdf';
-import { PAGE_SIZES } from './merge-pdf';
 
 const SCALE = 2; // Render at 2x for crisp PDF output
+const CLASS_NAME = 'docx-word-merge';
 
 /**
  * Render a Word document (.docx) to PDF pages using docx-preview for high-fidelity output.
@@ -19,15 +19,31 @@ export async function addWordPages(
   const { renderAsync } = await import('docx-preview');
   const html2canvas = (await import('html2canvas')).default;
 
-  // 1. Create a hidden container for docx-preview to render into
-  const wrapper = document.createElement('div');
-  wrapper.style.cssText = 'position:fixed;top:0;left:0;z-index:-9999;overflow:visible;background:transparent;';
-  document.body.appendChild(wrapper);
+  // 1. Create containers
+  // Style container: inject into head so html2canvas picks up all docx-preview styles
+  const styleContainer = document.createElement('div');
+  styleContainer.id = `${CLASS_NAME}-styles`;
+  document.head.appendChild(styleContainer);
+
+  // Body container: hidden off-screen area for docx-preview to render pages into
+  const bodyContainer = document.createElement('div');
+  bodyContainer.id = `${CLASS_NAME}-container`;
+  bodyContainer.style.cssText = `
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: -9999;
+    overflow: visible;
+    background: transparent;
+    opacity: 1;
+    visibility: visible;
+  `;
+  document.body.appendChild(bodyContainer);
 
   try {
-    // 2. Render the Word document — docx-preview creates pages as section elements
-    await renderAsync(sourceArrayBuffer, wrapper, null, {
-      className: 'docx-preview-render',
+    // 2. Render the Word document
+    await renderAsync(sourceArrayBuffer, bodyContainer, styleContainer, {
+      className: CLASS_NAME,
       inWrapper: true,
       ignoreWidth: false,
       ignoreHeight: false,
@@ -44,22 +60,23 @@ export async function addWordPages(
     });
 
     // 3. Find all rendered page sections
-    const pageElements = wrapper.querySelectorAll('.docx-preview-render > section');
+    // docx-preview DOM structure (inWrapper=true):
+    //   bodyContainer > div.{className}-wrapper > section.{className}
+    let pageElements = bodyContainer.querySelectorAll(`section.${CLASS_NAME}`);
+    if (pageElements.length === 0) {
+      // Fallback: any section inside the container
+      pageElements = bodyContainer.querySelectorAll('section');
+    }
     if (pageElements.length === 0) {
       throw new Error('Word 文档渲染失败：未生成任何页面');
     }
 
-    // 4. Render each page to canvas and embed into PDF
+    // 4. Wait a moment for all styles to apply and images to load
+    await new Promise((r) => setTimeout(r, 500));
+
+    // 5. Render each page to canvas and embed into PDF
     for (let i = 0; i < pageElements.length; i++) {
       const pageEl = pageElements[i] as HTMLElement;
-
-      // Make sure the page element is visible for html2canvas
-      pageEl.style.position = 'relative';
-      pageEl.style.overflow = 'hidden';
-      pageEl.style.background = '#ffffff';
-
-      // Small delay for rendering
-      await new Promise((r) => setTimeout(r, 100));
 
       const canvas = await html2canvas(pageEl, {
         scale: SCALE,
@@ -78,7 +95,7 @@ export async function addWordPages(
       const image = await mergedPdf.embedPng(imageBytes);
 
       // Calculate page size from the rendered element
-      // docx-preview renders at screen resolution, convert to PDF points
+      // docx-preview renders at screen resolution, convert to PDF points (96dpi → 72dpi)
       const renderedWidthPx = pageEl.offsetWidth;
       const renderedHeightPx = pageEl.offsetHeight;
       const pageWidthPt = (renderedWidthPx * 72) / 96;
@@ -104,9 +121,12 @@ export async function addWordPages(
 
     return pageElements.length;
   } finally {
-    // 5. Clean up the render container
-    if (wrapper.parentNode) {
-      document.body.removeChild(wrapper);
+    // 6. Clean up containers
+    if (bodyContainer.parentNode) {
+      document.body.removeChild(bodyContainer);
+    }
+    if (styleContainer.parentNode) {
+      document.head.removeChild(styleContainer);
     }
   }
 }
