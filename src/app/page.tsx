@@ -1,5 +1,4 @@
 import { MergeTool } from '@/components/merge-tool';
-import { FileSymlink } from 'lucide-react';
 
 export default function Home() {
   return (
@@ -7,7 +6,6 @@ export default function Home() {
       {/* Header */}
       <header className="text-center mb-6 md:mb-8">
         <div className="flex items-center justify-center gap-3 mb-2">
-          <FileSymlink className="w-8 h-8 text-white/90" />
           <h1 className="text-2xl md:text-4xl font-bold text-white tracking-tight drop-shadow-lg">
             PDF、图片与 Word 合并工具
           </h1>
