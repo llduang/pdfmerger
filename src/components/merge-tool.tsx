@@ -22,7 +22,7 @@ import {
   processImageFile,
 } from '@/lib/process-files';
 import { addPdfPages, addImagePage } from '@/lib/merge-pdf';
-import { addWordPages, warmUpConverter } from '@/lib/word-to-pdf';
+import { addWordPages } from '@/lib/word-to-pdf';
 import { useToast } from '@/hooks/use-toast';
 
 const VALID_TYPES = [
@@ -107,11 +107,7 @@ export function MergeTool() {
       }
 
       if (newFiles.length > 0) {
-        // Pre-warm the conversion service if any Word files were added
-        const hasWord = newFiles.some((f) => f.category === 'Word');
-        if (hasWord) {
-          warmUpConverter(); // Fire-and-forget, don't block UI
-        }
+
         setFiles((prev) => [...prev, ...newFiles]);
       }
     },
