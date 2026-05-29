@@ -5,45 +5,33 @@ const SCALE = 2;
 const CLASS_NAME = 'docx-word-merge';
 
 /**
- * Render a Word document (.docx) to PDF pages.
+ * Render a Word document (.docx) to PDF pages using docx-preview + html2canvas.
  *
- * Pipeline:
- *   docx-preview renderAsync  (high-fidelity Word rendering)
- *   → ensure all images loaded
- *   → html-to-image toPng     (native SVG foreignObject — NOT html2canvas)
- *   → embed PNG into pdf-lib
- *
- * Why html-to-image instead of html2canvas:
- *   html2canvas reimplements CSS in JS → poor image/CSS support
- *   html-to-image uses the browser's own renderer → perfect fidelity
+ * Note: This is the "automatic download" path. It uses html2canvas which has known
+ * limitations with images and complex CSS. For PERFECT Word rendering, use the
+ * PrintPreview component which leverages the browser's native print engine.
  */
 export async function addWordPages(
   mergedPdf: PDFDocument,
   sourceArrayBuffer: ArrayBuffer,
   orientation: OrientationMode
 ): Promise<number> {
-  // Dynamic imports (browser-only)
   const { renderAsync } = await import('docx-preview');
-  const { toPng } = await import('html-to-image');
+  const html2canvas = (await import('html2canvas')).default;
 
-  // 1. Create render container — visible, within viewport, behind everything
+  // Create render container in viewport
   const container = document.createElement('div');
   container.id = `${CLASS_NAME}-container`;
   container.style.cssText = `
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: auto;
-    min-height: 100vh;
-    z-index: -1;
-    pointer-events: none;
+    position: fixed; top: 0; left: 0;
+    width: 100vw; height: auto; min-height: 100vh;
+    z-index: -1; pointer-events: none;
     background: white;
   `;
   document.body.appendChild(container);
 
   try {
-    // 2. Render Word document with docx-preview
+    // Render with docx-preview
     await renderAsync(sourceArrayBuffer, container, null, {
       className: CLASS_NAME,
       inWrapper: true,
@@ -61,7 +49,7 @@ export async function addWordPages(
       renderEndnotes: true,
     });
 
-    // 3. Find all rendered page sections
+    // Find page sections
     let pageElements = container.querySelectorAll(`section.${CLASS_NAME}`);
     if (pageElements.length === 0) {
       pageElements = container.querySelectorAll('section');
@@ -70,14 +58,11 @@ export async function addWordPages(
       throw new Error('Word 文档渲染失败：未生成任何页面');
     }
 
-    // 4. Ensure all images are loaded and convert any blob URLs to base64
+    // Wait for images to load
     await ensureAllImagesLoaded(container);
+    await new Promise((r) => setTimeout(r, 800));
 
-    // 5. Wait for browser to complete layout/paint
-    await new Promise((r) => setTimeout(r, 600));
-
-    // 6. Override wrapper styles that could interfere with screenshot
-    // docx-preview adds gray background, padding, and centering to the wrapper
+    // Clean up wrapper styles for cleaner screenshot
     const wrapper = container.querySelector(`.${CLASS_NAME}-wrapper`) as HTMLElement;
     if (wrapper) {
       wrapper.style.background = 'white';
@@ -85,47 +70,48 @@ export async function addWordPages(
       wrapper.style.margin = '0';
     }
 
-    // 7. Render each page section to PNG and embed into PDF
+    // Render each page to canvas and embed
     for (let i = 0; i < pageElements.length; i++) {
       const pageEl = pageElements[i] as HTMLElement;
-
-      // Ensure the section has a clean white background
       pageEl.style.background = '#ffffff';
       pageEl.style.boxShadow = 'none';
       pageEl.style.margin = '0';
 
       try {
-        // Use html-to-image which leverages browser's native SVG foreignObject rendering
-        const dataUrl = await toPng(pageEl, {
-          quality: 1,
-          pixelRatio: SCALE,
-          style: {
-            // Force white background for the capture
-            background: '#ffffff',
-          },
-          // Filter out any remaining blob URLs
-          filter: (node: Node) => {
-            if (node instanceof HTMLImageElement && node.src?.startsWith('blob:')) {
-              return false;
-            }
-            return true;
+        const canvas = await html2canvas(pageEl, {
+          scale: SCALE,
+          useCORS: true,
+          allowTaint: true,
+          backgroundColor: '#ffffff',
+          logging: false,
+          imageTimeout: 15000,
+          onclone: (clonedDoc) => {
+            // Fix images in the cloned document
+            const clonedEl = clonedDoc.querySelector(
+              `[data-html2canvas-id="${pageEl.getAttribute('data-html2canvas-id')}"]`
+            ) || pageEl;
+            const imgs = (clonedEl as HTMLElement).querySelectorAll('img');
+            imgs.forEach((img) => {
+              const el = img as HTMLImageElement;
+              if (el.src && el.src.startsWith('blob:')) {
+                el.removeAttribute('src');
+              }
+            });
           },
         });
 
-        if (!dataUrl || dataUrl.length < 100) continue;
+        if (canvas.width === 0 || canvas.height === 0) continue;
 
-        // Extract base64 data from the data URL
-        const base64Data = dataUrl.split(',')[1];
+        const pngDataUrl = canvas.toDataURL('image/png');
+        const base64Data = pngDataUrl.split(',')[1];
         const imageBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
         const image = await mergedPdf.embedPng(imageBytes);
 
-        // Calculate PDF page dimensions from rendered element
         const renderedWidthPx = pageEl.offsetWidth;
         const renderedHeightPx = pageEl.offsetHeight;
         const pageWidthPt = (renderedWidthPx * 72) / 96;
         const pageHeightPt = (renderedHeightPx * 72) / 96;
 
-        // Handle orientation
         let pdfWidth = pageWidthPt;
         let pdfHeight = pageHeightPt;
         if (orientation === 'all-landscape' && pdfWidth < pdfHeight) {
@@ -135,15 +121,9 @@ export async function addWordPages(
         }
 
         const page = mergedPdf.addPage([pdfWidth, pdfHeight]);
-        page.drawImage(image, {
-          x: 0,
-          y: 0,
-          width: pdfWidth,
-          height: pdfHeight,
-        });
+        page.drawImage(image, { x: 0, y: 0, width: pdfWidth, height: pdfHeight });
       } catch (err) {
         console.error(`Failed to render Word page ${i + 1}:`, err);
-        // Continue with remaining pages instead of failing the whole document
       }
     }
 
@@ -155,48 +135,39 @@ export async function addWordPages(
   }
 }
 
-/**
- * Ensure all images in the container are fully loaded.
- * Converts blob URLs to base64 data URLs for reliable capture.
- */
 async function ensureAllImagesLoaded(container: HTMLElement): Promise<void> {
   const images = container.querySelectorAll('img');
   if (images.length === 0) return;
 
-  // Convert any blob URLs to base64 data URLs
   for (let i = 0; i < images.length; i++) {
     const img = images[i] as HTMLImageElement;
-    if (!img.src || img.src === '') continue;
-
-    if (img.src.startsWith('blob:')) {
+    if (img.src?.startsWith('blob:')) {
       try {
-        const response = await fetch(img.src);
-        const blob = await response.blob();
+        const resp = await fetch(img.src);
+        const blob = await resp.blob();
         img.src = await blobToBase64(blob);
       } catch (e) {
-        console.warn('Failed to convert blob image to base64:', e);
+        console.warn('Failed to convert blob image:', e);
       }
     }
   }
 
-  // Wait for all images to finish loading
   await Promise.all(
     Array.from(images).map((img) => {
       const el = img as HTMLImageElement;
       if (el.complete && el.naturalWidth > 0) return Promise.resolve();
       return new Promise<void>((resolve) => {
-        const onDone = () => {
-          el.removeEventListener('load', onDone);
-          el.removeEventListener('error', onDone);
+        const done = () => {
+          el.removeEventListener('load', done);
+          el.removeEventListener('error', done);
           resolve();
         };
-        el.addEventListener('load', onDone);
-        el.addEventListener('error', onDone);
+        el.addEventListener('load', done);
+        el.addEventListener('error', done);
       });
     })
   );
 
-  // Extra wait for browser to decode images
   await new Promise((r) => setTimeout(r, 500));
 }
 
