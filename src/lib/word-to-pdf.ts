@@ -1,116 +1,59 @@
-import { PDFDocument } from 'pdf-lib';
-import type { OrientationMode } from './merge-pdf';
-import { renderWordToHtml } from './word-render';
+// ⬇️ 把这个换成你第二步拿到的 Worker 地址
+const CONVERT_API = 'https://pdf-convert.2710476780.workers.dev/';
 
-const SCALE = 2;
-const RENDER_CLASS = 'wp-pdf-render';
+import { PDFDocument, degrees } from 'pdf-lib';
+import type { OrientationMode } from './merge-pdf';
 
 export async function addWordPages(
   mergedPdf: PDFDocument,
   sourceArrayBuffer: ArrayBuffer,
   orientation: OrientationMode
 ): Promise<number> {
-  const html2canvas = (await import('html2canvas')).default;
+  const formData = new FormData();
+  formData.append(
+    'file',
+    new Blob([sourceArrayBuffer], {
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }),
+    'document.docx'
+  );
 
-  const renderResult = await renderWordToHtml(sourceArrayBuffer, RENDER_CLASS);
-
-  const container = document.createElement('div');
-  container.id = 'wp-capture-container';
-  container.style.cssText =
-    'position:fixed;top:0;left:0;z-index:-9999;pointer-events:none;background:white;';
-  document.body.appendChild(container);
-
-  const resetStyle = document.createElement('style');
-  resetStyle.id = 'wp-capture-reset';
-  resetStyle.textContent =
-    '#wp-capture-container img { max-width: none !important; }';
-  document.head.appendChild(resetStyle);
-
+  let response: Response;
   try {
-    container.innerHTML = renderResult.html;
+    response = await fetch(CONVERT_API, { method: 'POST', body: formData });
+  } catch {
+    throw new Error('转换服务连接失败，请检查网络后重试');
+  }
 
-    const wrapper = container.querySelector(
-      `.${RENDER_CLASS}-wrapper`
-    ) as HTMLElement;
-    if (wrapper) {
-      wrapper.style.background = 'white';
-      wrapper.style.boxShadow = 'none';
-    }
+  if (!response.ok) {
+    throw new Error('Word 转换失败，请稍后重试');
+  }
 
-    await waitForImages(container);
+  const pdfBytes = new Uint8Array(await response.arrayBuffer());
+  const sourcePdf = await PDFDocument.load(pdfBytes);
+  const copiedPages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
 
-    let sections = container.querySelectorAll(`section.${RENDER_CLASS}`);
-    if (sections.length === 0) sections = container.querySelectorAll('section');
-    if (sections.length === 0) throw new Error('Word 文档渲染失败：未生成任何页面');
+  for (const page of copiedPages) {
+    mergedPdf.addPage(page);
+  }
 
-    for (let i = 0; i < sections.length; i++) {
-      const section = sections[i] as HTMLElement;
-
-      section.style.overflow = 'hidden';
-      section.style.background = '#ffffff';
-      section.style.boxShadow = 'none';
-
-      const wPx = section.offsetWidth;
-      const hPx = section.offsetHeight;
-
-      if (wPx <= 0 || hPx <= 0) continue;
-
-      try {
-        const canvas = await html2canvas(section, {
-          scale: SCALE,
-          backgroundColor: '#ffffff',
-          useCORS: true,
-          allowTaint: true,
-          logging: false,
-        });
-
-        const pngDataUrl = canvas.toDataURL('image/png');
-        const base64Data = pngDataUrl.split(',')[1];
-        const imageBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
-        const image = await mergedPdf.embedPng(imageBytes);
-
-        let pdfWidthPt = (wPx * 72) / 96;
-        let pdfHeightPt = (hPx * 72) / 96;
-
-        if (orientation === 'all-landscape' && pdfWidthPt < pdfHeightPt) {
-          [pdfWidthPt, pdfHeightPt] = [pdfHeightPt, pdfWidthPt];
-        } else if (orientation === 'all-portrait' && pdfWidthPt > pdfHeightPt) {
-          [pdfWidthPt, pdfHeightPt] = [pdfHeightPt, pdfWidthPt];
-        }
-
-        const page = mergedPdf.addPage([pdfWidthPt, pdfHeightPt]);
-        page.drawImage(image, { x: 0, y: 0, width: pdfWidthPt, height: pdfHeightPt });
-      } catch (err) {
-        console.error(`Failed to capture Word page ${i + 1}:`, err);
+  if (orientation !== 'keep-original') {
+    const total = mergedPdf.getPageCount();
+    const start = total - copiedPages.length;
+    for (let i = start; i < total; i++) {
+      const page = mergedPdf.getPage(i);
+      const { width, height } = page.getSize();
+      const needRotate =
+        (orientation === 'all-portrait' && width > height) ||
+        (orientation === 'all-landscape' && width <= height);
+      if (needRotate) {
+        const rot = page.getRotation().angle;
+        page.setRotation(degrees((rot + 90) % 360));
+        const box = page.getMediaBox();
+        page.setMediaBox(box.y, box.x, box.height, box.width);
       }
     }
-
-    return sections.length;
-  } finally {
-    const styleEl = document.getElementById('wp-capture-reset');
-    if (styleEl) document.head.removeChild(styleEl);
-    if (container.parentNode) document.body.removeChild(container);
   }
-}
 
-async function waitForImages(container: HTMLElement): Promise<void> {
-  const images = container.querySelectorAll('img');
-  if (images.length === 0) return;
-
-  await Promise.all(
-    Array.from(images).map((img) => {
-      const el = img as HTMLImageElement;
-      if (el.complete && el.naturalWidth > 0) return Promise.resolve();
-      return new Promise<void>((resolve) => {
-        const done = () => {
-          el.removeEventListener('load', done);
-          el.removeEventListener('error', done);
-          resolve();
-        };
-        el.addEventListener('load', done);
-        el.addEventListener('error', done);
-      });
-    })
-  );
-  await new Promise((r) => setTimeout(r, 300));
+  return copiedPages.length;
 }

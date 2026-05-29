@@ -14,7 +14,6 @@ import {
   type QualityOption,
 } from '@/components/merge-options';
 import { MergeProgress } from '@/components/merge-progress';
-import { PrintPreview } from '@/components/print-preview';
 import type { ProcessedFile } from '@/lib/process-files';
 import {
   getFileCategory,
@@ -39,17 +38,13 @@ const VALID_TYPES = [
 export function MergeTool() {
   const { toast } = useToast();
 
-  // File state
   const [files, setFiles] = useState<ProcessedFile[]>([]);
   const [isMerging, setIsMerging] = useState(false);
-  const [showPrintPreview, setShowPrintPreview] = useState(false);
 
-  // Progress state
   const [progressVisible, setProgressVisible] = useState(false);
   const [progressPercent, setProgressPercent] = useState(0);
   const [progressFileName, setProgressFileName] = useState('');
 
-  // Options state
   const [pageSize, setPageSize] = useState<PageSizeOption>('a4');
   const [orientation, setOrientation] = useState<OrientationOption>('all-portrait');
   const [imageQuality, setImageQuality] = useState<QualityOption>('0.9');
@@ -146,14 +141,9 @@ export function MergeTool() {
     const mergedPdf = await PDFDocument.create();
     const effectivePageSize = pageSize;
 
-    // Estimate total work for progress bar
     let totalWork = 0;
     for (const fileData of files) {
-      if (fileData.category === 'Word') {
-        totalWork += 3;
-      } else {
-        totalWork += fileData.pages || 1;
-      }
+      totalWork += fileData.pages || 1;
     }
     let processedWork = 0;
 
@@ -170,7 +160,7 @@ export function MergeTool() {
           fileData.arrayBuffer!,
           orientation
         );
-        processedWork += 3;
+        processedWork += wordPages;
         setFiles((prev) =>
           prev.map((f) =>
             f.id === fileData.id ? { ...f, pages: wordPages } : f
@@ -242,192 +232,167 @@ export function MergeTool() {
     }
   }, [files, isMerging, doMerge, toast]);
 
-  // ─── Print Preview — opens new tab for Word files ───────────────────────
+  // ─── Preview — merge + open PDF in new tab ──────────────────────────────
 
-  const handlePrintPreview = useCallback(async () => {
-    if (files.length === 0) return;
+  const handlePreview = useCallback(async () => {
+    if (files.length === 0 || isMerging) return;
+    setIsMerging(true);
+    setProgressVisible(true);
+    setProgressPercent(0);
 
-    // If no Word files, just merge and open the PDF in a new tab
-    if (!hasWordFiles) {
-      setIsMerging(true);
-      setProgressVisible(true);
-      setProgressPercent(0);
-      try {
-        const pdfBytes = await doMerge();
-        const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
-        const url = URL.createObjectURL(blob);
-        window.open(url, '_blank');
-        toast({
-          title: '预览已打开',
-          description: 'PDF文件已在新标签页中打开',
-        });
-        setProgressVisible(false);
-      } catch (error) {
-        console.error('Preview error:', error);
-        toast({
-          title: '预览失败',
-          description:
-            error instanceof Error ? error.message : '生成预览时出错',
-          variant: 'destructive',
-        });
-        setProgressVisible(false);
-      } finally {
-        setIsMerging(false);
-      }
-      return;
+    try {
+      const pdfBytes = await doMerge();
+      const blob = new Blob([pdfBytes.buffer as ArrayBuffer], { type: 'application/pdf' });
+      const url = URL.createObjectURL(blob);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+
+      setProgressPercent(100);
+      setProgressFileName('完成！');
+      toast({
+        title: '预览已打开',
+        description: 'PDF已在新标签页中打开，可打印或另存为PDF',
+      });
+      setTimeout(() => setProgressVisible(false), 1000);
+    } catch (error) {
+      console.error('Preview error:', error);
+      toast({
+        title: '预览失败',
+        description:
+          error instanceof Error ? error.message : '生成预览时出错',
+        variant: 'destructive',
+      });
+      setProgressVisible(false);
+    } finally {
+      setIsMerging(false);
     }
-
-    // Has Word files — show print preview overlay which opens a new tab
-    setShowPrintPreview(true);
-  }, [files, hasWordFiles, doMerge, toast]);
+  }, [files, isMerging, doMerge, toast]);
 
   // ─── Render ─────────────────────────────────────────────────────────────
 
   return (
-    <>
-      <div className="w-full max-w-4xl mx-auto space-y-5">
-        {/* Upload Zone */}
-        <FileUploadZone
-          onFilesSelected={handleFilesSelected}
-          disabled={isMerging}
-        />
+    <div className="w-full max-w-4xl mx-auto space-y-5">
+      {/* Upload Zone */}
+      <FileUploadZone
+        onFilesSelected={handleFilesSelected}
+        disabled={isMerging}
+      />
 
-        {/* Merge Options */}
-        <MergeOptions
-          pageSize={pageSize}
-          orientation={orientation}
-          imageQuality={imageQuality}
-          hasWordFiles={hasWordFiles}
-          onPageSizeChange={setPageSize}
-          onOrientationChange={setOrientation}
-          onImageQualityChange={setImageQuality}
-        />
+      {/* Merge Options */}
+      <MergeOptions
+        pageSize={pageSize}
+        orientation={orientation}
+        imageQuality={imageQuality}
+        hasWordFiles={hasWordFiles}
+        onPageSizeChange={setPageSize}
+        onOrientationChange={setOrientation}
+        onImageQualityChange={setImageQuality}
+      />
 
-        {/* File List */}
-        <FileListHeader fileCount={files.length} />
-        <FileList
-          files={files}
-          onReorder={handleReorder}
-          onDelete={handleDelete}
-        />
+      {/* File List */}
+      <FileListHeader fileCount={files.length} />
+      <FileList
+        files={files}
+        onReorder={handleReorder}
+        onDelete={handleDelete}
+      />
 
-        {/* Action Buttons */}
-        <div className="flex flex-col sm:flex-row gap-3 pt-2">
-          <Button
-            variant="outline"
-            onClick={handleClearAll}
-            disabled={files.length === 0 || isMerging}
-            className="flex items-center gap-2"
-          >
-            <Trash2 className="w-4 h-4" />
-            清空列表
-          </Button>
+      {/* Action Buttons */}
+      <div className="flex flex-col sm:flex-row gap-3 pt-2">
+        <Button
+          variant="outline"
+          onClick={handleClearAll}
+          disabled={files.length === 0 || isMerging}
+          className="flex items-center gap-2"
+        >
+          <Trash2 className="w-4 h-4" />
+          清空列表
+        </Button>
 
-          <Button
-            onClick={handlePrintPreview}
-            disabled={files.length === 0 || isMerging}
-            variant="outline"
-            className="flex-1 flex items-center justify-center gap-2 border-purple-300 text-purple-700 hover:bg-purple-50 hover:text-purple-800 transition-all duration-300 hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0"
-          >
-            {isMerging ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                正在处理...
-              </>
-            ) : (
-              <>
-                <Eye className="w-4 h-4" />
-                打印预览（推荐）
-              </>
-            )}
-          </Button>
+        <Button
+          onClick={handlePreview}
+          disabled={files.length === 0 || isMerging}
+          variant="outline"
+          className="flex-1 flex items-center justify-center gap-2 border-purple-300 text-purple-700 hover:bg-purple-50 hover:text-purple-800 transition-all duration-300 hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+        >
+          {isMerging ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              正在处理...
+            </>
+          ) : (
+            <>
+              <Eye className="w-4 h-4" />
+              预览
+            </>
+          )}
+        </Button>
 
-          <Button
-            onClick={handleMergeAndDownload}
-            disabled={files.length === 0 || isMerging}
-            className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-700 hover:to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0"
-          >
-            {isMerging ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                正在合并...
-              </>
-            ) : (
-              <>
-                <Download className="w-4 h-4" />
-                合并并下载
-              </>
-            )}
-          </Button>
-        </div>
-
-        {/* Progress */}
-        <MergeProgress
-          visible={progressVisible}
-          percent={progressPercent}
-          fileName={progressFileName}
-        />
-
-        {/* Tips Section */}
-        <Card className="bg-amber-50 border-amber-200/60">
-          <CardContent className="p-4 md:p-5">
-            <div className="flex items-start gap-2 mb-3">
-              <Lightbulb className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-              <h4 className="font-semibold text-amber-700">使用提示</h4>
-            </div>
-            <ul className="space-y-2 text-sm text-amber-800/80 ml-7">
-              <li className="flex items-start gap-2">
-                <span className="text-amber-400 mt-1">•</span>
-                <span>
-                  <strong>拖拽排序：</strong>
-                  可以拖动文件列表中的项目来调整合并顺序
-                </span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-amber-400 mt-1">•</span>
-                <span>
-                  <strong>打印预览（推荐）：</strong>
-                  Word 文档在新标签页中使用浏览器原生引擎渲染，排版和图片完整保留。在打印对话框中选择「另存为 PDF」即可保存
-                </span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-amber-400 mt-1">•</span>
-                <span>
-                  <strong>合并并下载：</strong>
-                  全自动合并所有文件为 PDF 并下载。Word 文档通过浏览器渲染转换
-                </span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-amber-400 mt-1">•</span>
-                <span>
-                  <strong>方向处理：</strong>
-                  选择「统一为竖向」可自动将横向页面旋转，方便打印
-                </span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-amber-400 mt-1">•</span>
-                <span>
-                  <strong>自动适配：</strong>
-                  图片会自动适应目标纸张大小，保持原始比例
-                </span>
-              </li>
-            </ul>
-          </CardContent>
-        </Card>
+        <Button
+          onClick={handleMergeAndDownload}
+          disabled={files.length === 0 || isMerging}
+          className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-purple-600 to-purple-500 hover:from-purple-700 hover:to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+        >
+          {isMerging ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              正在合并...
+            </>
+          ) : (
+            <>
+              <Download className="w-4 h-4" />
+              合并并下载
+            </>
+          )}
+        </Button>
       </div>
 
-      {/* Print Preview Overlay (loading → opens new tab) */}
-      {showPrintPreview && (
-        <PrintPreview
-          files={files.map((f) => ({
-            file: f.file,
-            name: f.name,
-            category: f.category,
-            arrayBuffer: f.arrayBuffer,
-          }))}
-          onClose={() => setShowPrintPreview(false)}
-        />
-      )}
-    </>
+      {/* Progress */}
+      <MergeProgress
+        visible={progressVisible}
+        percent={progressPercent}
+        fileName={progressFileName}
+      />
+
+      {/* Tips Section */}
+      <Card className="bg-amber-50 border-amber-200/60">
+        <CardContent className="p-4 md:p-5">
+          <div className="flex items-start gap-2 mb-3">
+            <Lightbulb className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+            <h4 className="font-semibold text-amber-700">使用提示</h4>
+          </div>
+          <ul className="space-y-2 text-sm text-amber-800/80 ml-7">
+            <li className="flex items-start gap-2">
+              <span className="text-amber-400 mt-1">•</span>
+              <span>
+                <strong>拖拽排序：</strong>
+                可以拖动文件列表中的项目来调整合并顺序
+              </span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-amber-400 mt-1">•</span>
+              <span>
+                <strong>服务端转换：</strong>
+                Word 文档通过 LibreOffice 引擎在服务端转换为 PDF，排版、图片、边距与 Word 原文件完全一致
+              </span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-amber-400 mt-1">•</span>
+              <span>
+                <strong>预览：</strong>
+                合并后在新标签页中打开 PDF，可检查效果后打印或另存为 PDF
+              </span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-amber-400 mt-1">•</span>
+              <span>
+                <strong>隐私安全：</strong>
+                文件仅在转换时发送到服务端，不会被存储，处理完立即丢弃
+              </span>
+            </li>
+          </ul>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
