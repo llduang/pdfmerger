@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   // For local dev server, keep "standalone".
   // For Cloudflare Pages deployment, change to: output: "export"
   // and add: images: { unoptimized: true }
-  output: "standalone",
+  output: "export",
   typescript: {
     ignoreBuildErrors: true,
   },
